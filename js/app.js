@@ -72,9 +72,14 @@
   }
 
   // ---------------- Utilidades ----------------
-  function toast(msg) {
+  function toast(msg, action) {
     const t = $('#toast'); t.textContent = msg; t.hidden = false;
-    clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 2200);
+    if (action) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'toast-btn'; b.textContent = action.label;
+      b.addEventListener('click', () => { t.hidden = true; action.run(); });
+      t.appendChild(b);
+    }
+    clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), action ? 12000 : 2200);
   }
   const commit = (msg) => { Core.save(); render(); if (msg) toast(msg); };
   const card = (id) => S().cards.find((c) => c.id === id);
@@ -363,6 +368,7 @@
             <label class="check"><input type="checkbox" id="invPaid" ${inv.paid ? 'checked' : ''}/> Fatura paga</label>
             <button class="btn btn-sm" data-act="inv-override">${icon('edit')}${inv.override != null ? 'Alterar' : 'Informar'} valor oficial</button>
             <button class="btn btn-sm" data-act="tx-new-card">${icon('plus')}Lançar neste cartão</button>
+            <button class="btn btn-sm btn-danger" data-act="bulk-del-card">${icon('trash')}Excluir lançamentos desta fatura</button>
           </div>
         </div>
 
@@ -1095,6 +1101,71 @@
   }
 
   // ======================================================
+  // EXCLUIR LANÇAMENTOS DO MÊS
+  // ======================================================
+  /** Lançamentos atingidos: 'charge' = com cobrança na fatura/mês; 'purchase' = compra feita no mês. */
+  function bulkTargets(month, account, mode) {
+    return S().transactions.filter((t) => {
+      if (account !== 'all' && t.account !== account) return false;
+      if (mode === 'purchase') return (t.date || '').slice(0, 7) === month;
+      return !!Core.installmentIn(t, month);
+    });
+  }
+
+  function bulkDeleteForm(preset = {}) {
+    const month = preset.month || ui.month;
+    const form = openModal(`
+      <h2>Excluir lançamentos do mês</h2>
+      <p class="desc">Use para apagar uma fatura ou um mês e carregar de novo. Você poderá desfazer logo em seguida.</p>
+      <div class="form-grid">
+        <div class="field"><label>Mês</label><input type="month" name="month" value="${month}" required /></div>
+        <div class="field"><label>Cartão / conta</label><select name="account"><option value="all">Todos os cartões e contas</option>${accountOptions(preset.account || '')}</select></div>
+        <div class="field full"><label>O que excluir</label>
+          <label class="check"><input type="radio" name="mode" value="charge" checked /> Tudo que é cobrado neste mês (fatura com vencimento neste mês)</label>
+          <label class="check"><input type="radio" name="mode" value="purchase" /> Só as compras feitas neste mês (pela data da compra)</label>
+        </div>
+        <div class="field full"><label class="check"><input type="checkbox" name="extras" checked /> Também limpar o valor oficial e a marcação de “paga” da fatura</label></div>
+      </div>
+      <div class="bulk-preview" id="bulkPrev"></div>
+      <div class="modal-actions"><button class="btn btn-ghost" value="cancel" formnovalidate>Cancelar</button><button class="btn btn-primary btn-danger-solid" type="submit" id="bulkGo">Excluir</button></div>`,
+    (f) => {
+      const m = f.get('month'), acc = f.get('account'), mode = f.get('mode');
+      const list = bulkTargets(m, acc, mode);
+      if (!list.length) return false;
+      const ids = new Set(list.map((t) => t.id));
+      const snapshot = { tx: list.map((t) => ({ ...t })), overrides: {}, paid: {} };
+      S().transactions = S().transactions.filter((t) => !ids.has(t.id));
+      if (f.get('extras')) {
+        const cards = acc === 'all' ? S().cards.map((c) => c.id) : [acc];
+        cards.forEach((c) => {
+          const k = c + '|' + m;
+          if (k in S().invoiceOverrides) { snapshot.overrides[k] = S().invoiceOverrides[k]; delete S().invoiceOverrides[k]; }
+          if (k in S().invoicePaid) { snapshot.paid[k] = S().invoicePaid[k]; delete S().invoicePaid[k]; }
+        });
+      }
+      Core.save(); render();
+      toast(`${list.length} lançamentos excluídos`, { label: 'Desfazer', run: () => {
+        S().transactions.push(...snapshot.tx);
+        Object.assign(S().invoiceOverrides, snapshot.overrides); Object.assign(S().invoicePaid, snapshot.paid);
+        commit('Exclusão desfeita');
+      } });
+    });
+    const upd = () => {
+      const m = form.month.value, acc = form.account.value, mode = form.mode.value;
+      const list = m ? bulkTargets(m, acc, mode) : [];
+      const multi = list.filter((t) => t.installments > 1);
+      const total = list.reduce((a, t) => a + (mode === 'charge' ? t.amount : t.amount * t.installments), 0);
+      $('#bulkPrev', form).innerHTML = !list.length ? `<div class="empty">Nenhum lançamento encontrado para ${m ? fmt.monthLong(m) : 'este mês'}.</div>` : `
+        <div class="alert" style="margin:16px 0 0">${icon('alert')}<div>
+          <b>${list.length} lançamentos</b> serão excluídos (${mode === 'charge' ? 'cobrança no mês' : 'valor das compras'}: <b>${fmt.money(total)}</b>).
+          ${multi.length ? `<br>${multi.length} são parcelados e serão excluídos <b>por inteiro</b> (todas as parcelas) — ao reimportar a fatura, eles voltam com as parcelas corretas.` : ''}
+          <div class="cell-sub" style="margin-top:6px">${list.slice(0, 8).map((t) => esc(t.desc)).join(', ')}${list.length > 8 ? ` e mais ${list.length - 8}…` : ''}</div></div></div>`;
+      const go = $('#bulkGo', form); go.disabled = !list.length; go.textContent = list.length ? `Excluir ${list.length} lançamentos` : 'Excluir';
+    };
+    form.addEventListener('change', upd); form.addEventListener('input', upd); upd();
+  }
+
+  // ======================================================
   // ROTEAMENTO / RENDER
   // ======================================================
   const ROUTES = {
@@ -1124,7 +1195,7 @@
   }
   const ACT = {
     'card-new': () => cardForm(), 'card-edit': () => cardForm(card(ui.cardSel)), 'inv-override': () => overrideForm(),
-    'tx-new': () => txForm(), 'tx-new-card': () => txForm(null, { account: ui.cardSel }), 'fix-new': () => fixedForm()
+    'tx-new': () => txForm(), 'tx-new-card': () => txForm(null, { account: ui.cardSel }), 'bulk-del-card': () => bulkDeleteForm({ account: ui.cardSel, month: ui.cardMonth || ui.month }), 'fix-new': () => fixedForm()
   };
 
   function applyTheme() {
@@ -1147,6 +1218,7 @@
     });
     $$('#monthPicker [data-step]').forEach((b) => b.addEventListener('click', () => { ui.month = ym.add(ui.month, +b.dataset.step); ui.cardMonth = null; render(); }));
     $('#quickAdd').addEventListener('click', () => txForm());
+    $('#bulkDel').addEventListener('click', () => bulkDeleteForm());
     $('#menuBtn').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
     $('#nav').addEventListener('click', () => $('#sidebar').classList.remove('open'));
     window.addEventListener('hashchange', () => { render(); $('#view').focus({ preventScroll: true }); window.scrollTo(0, 0); });

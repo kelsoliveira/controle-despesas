@@ -263,6 +263,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb
 .segmented button { border: 0; background: transparent; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-weight: 600; color: var(--text-2); }
 .segmented button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 
+.toast-btn { margin-left: 14px; border: 0; background: transparent; color: var(--primary); font-weight: 700; cursor: pointer; padding: 0; }
+:root[data-mode='light'] .toast-btn { color: #a5a0ff; }
+.btn-danger-solid { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn-danger-solid:hover { background: color-mix(in srgb, var(--bad) 85%, #000); }
+#bulkDel:hover { color: var(--bad); }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 12px; font-weight: 600; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.2); }
 .empty { text-align: center; color: var(--text-3); padding: 28px 0; }
 .muted { color: var(--text-3); }
