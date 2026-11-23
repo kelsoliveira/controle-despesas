@@ -41,8 +41,12 @@
   function parseStatementLines(text, invoiceMonth) {
     const items = [];
     const re = /(?:^|\s)(\d{2})\/(\d{2})(?!\/\d)\s+(.+?)\s*(?:(?:PARC(?:ELA)?\.?\s*)?\(?\b(\d{1,2})\s?\/\s?(\d{1,2})\)?)?\s+(-\s?)?(?:R\s?\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2})(\s?-)?(?=\s|$)/i;
+    let curRef = '';
     for (const raw of text.split(/\n/)) {
       const line = raw.replace(/\s+/g, ' ').trim();
+      // início da seção de um cartão: "5373.63**.****.4019" ou "final 4019"
+      const cr = line.match(/\d{4}[.\s]?\d{2}\*{2}[.\s]?\*{4}[.\s]?(\d{4})|\bfinal\s*(\d{4})\b/i);
+      if (cr) curRef = cr[1] || cr[2];
       const m = line.match(re);
       if (!m) continue;
       const [, dd, mm, descRaw, pn, pof, neg1, val, neg2] = m;
@@ -52,7 +56,7 @@
       let n = 1, of = 1;
       if (pn && pof && +pof >= +pn && +pof > 1 && +pof <= 72) { n = +pn; of = +pof; }
       const amount = toNum(val) * (neg1 || neg2 ? -1 : 1);
-      items.push({ date: inferYear(+dd, +mm, invoiceMonth, n), desc: cleanMerchant(desc), raw: desc, amount, n, of });
+      items.push({ date: inferYear(+dd, +mm, invoiceMonth, n), desc: cleanMerchant(desc), raw: desc, amount, n, of, ref: curRef });
     }
     return items;
   }
@@ -70,6 +74,8 @@
       const amts = [...line.matchAll(amtRe)];
       const parc = line.match(/Parcela\s+(\d{1,2})\s+de\s+(\d{1,2})/i);
       if (amts.length >= 2) { pendingDesc = ''; continue; } // linha de abas de meses / resumo
+      // "Cartão físico", "Cartão virtual", "Cartão físico adicional" → portador do lançamento anterior
+      if (!amts.length && last && /cart[aã]o|adicional/i.test(line)) last.holder = /adicional/i.test(line) ? 'adicional' : (last.holder || 'titular');
       if (amts.length === 1) {
         const a = amts[0];
         let desc = line.slice(0, a.index).replace(/\s+[-–+]$/, '').trim();
@@ -104,19 +110,19 @@
     'vinhedo', 'itajai', 'blumenau', 'londrina', 'maringa', 'sao jose dos campos', 'sao jose', 'canoas', 'betim', 'serra', 'vila velha', 'cariacica',
     'duque de caxias', 'nova iguacu', 'sao goncalo', 'osasco', 'carapicuiba', 'santana de parnaiba', 'alphaville', 'paulinia', 'indaiatuba'];
   const CITY_RE = CITIES.map((c) => c.replace(/ /g, '\\s*')).sort((a, b) => b.length - a.length).join('|');
-  const GATEWAYS = new Set(['ebn', 'pg', 'pag', 'pagseguro', 'pagbank', 'mp', 'mercadopago', 'pp', 'paypal', 'ec', 'dm', 'ifd', 'iz', 'sumup', 'stone', 'picpay', 'hna', 'ce', 'ton', 'cielo', 'getnet', 'zp', 'pay', 'ppro', 'pix', 'sympla']);
+  const GATEWAYS = new Set(['dl', 'ebn', 'pg', 'pag', 'pagseguro', 'pagbank', 'mp', 'mercadopago', 'pp', 'paypal', 'ec', 'dm', 'ifd', 'iz', 'sumup', 'stone', 'picpay', 'hna', 'ce', 'ton', 'cielo', 'getnet', 'zp', 'pay', 'ppro', 'pix', 'sympla']);
   const BRANDS = [[/amazon\s*mktplc|amazon\s*marketplace|^amazon(\s*br)?$|amazonbr|amazon/, 'Amazon'], [/mercado\s*livre|mercadolivre|^mercado$/, 'Mercado Livre'],
     [/shopee/, 'Shopee'], [/playstation|^psn/, 'PlayStation Store'], [/drogasil|droga\s*raia|^raia\b/, 'Raia Drogasil'], [/ifood/, 'iFood'],
     [/^uber|uber\s*trip|ubereats/, 'Uber'], [/netflix/, 'Netflix'], [/spotify/, 'Spotify'], [/aliexpress/, 'AliExpress'], [/magalu|magazine\s*luiza/, 'Magalu'],
     [/^99\s*(app|pop|tecnologia)/, '99'], [/google/, 'Google'], [/apple\.com|itunes/, 'Apple'], [/steam/, 'Steam'], [/nintendo/, 'Nintendo']];
-  const SUFFIX = /\s+(ltda|lt|me|sa|s\/a|eireli|epp|com|br|bra|[a-z])$/i;
+  const SUFFIX = /\s+(ltda|lt|me|sa|s\/a|eireli|epp|com|br|bra|de|da|do|[a-z])$/i;
 
   function stripLocation(s) {
-    let prev;
+    let prev, cityDone = false; // só a última cidade é a localização ("Posto Maceio | manaus")
     do {
       prev = s;
       s = s.replace(/(\w{3,}?)(bra|br)$/i, (m, a) => (/^(sob|lib|cob|zeb)$/i.test(a) ? m : a)).trim(); // "paulobra" → "paulo"
-      s = s.replace(new RegExp('\\s*(' + CITY_RE + ')$', 'i'), (m) => (s.length - m.length >= 3 ? '' : m)).trim();
+      if (!cityDone) s = s.replace(new RegExp('\\s*(' + CITY_RE + ')$', 'i'), (m) => { if (s.length - m.length >= 3) { cityDone = true; return ''; } return m; }).trim();
       const last = s.match(/\s([a-z]{5,})$/i); // cidade truncada (ex.: "Florianop")
       if (last && CITIES.some((c) => c.replace(/ /g, '').startsWith(last[1].toLowerCase()) && c.replace(/ /g, '') !== last[1].toLowerCase())) s = s.slice(0, last.index).trim();
       s = s.replace(SUFFIX, (m) => (s.length - m.length >= 3 ? '' : m)).trim();
@@ -172,9 +178,9 @@
     const d = (desc || '').toLowerCase();
     if (amount < 0) return 'reembolso';
     const rules = [
-      ['pets', /pet|bicho|vet|ra[cç][aã]o|cobasi|petz/], ['saude', /drogas|raia|farm|pague menos|hospital|cl[ií]nica|laborat|odonto|unimed|hapvida/],
-      ['lazer', /playstation|psn|xbox|steam|nintendo|game|level up|cinema|netflix|spotify|ingresso|ghgames/], ['educacao', /educa|curso|escola|faculd|udemy|alura|livraria/],
-      ['transporte', /uber|99\s?(app|pop)|posto|combust|shell|ipiranga|estacion|ped[aá]gio|sem parar/], ['alimentacao', /ifood|restaur|lanch|padaria|supermerc|atacad|assa[ií]|carrefour|burger|pizza|a[cç]ougue/],
+      ['pets', /pet|bicho|\bvet|ra[cç][aã]o|cobasi|petz/], ['saude', /drogas|droga(ria)?\b|raia|farm|pague menos|hospital|cl[ií]nica|laborat|odonto|unimed|hapvida|academia/],
+      ['lazer', /playstation|psn|xbox|steam|nintendo|game|level up|cinema|netflix|spotify|ingresso|ghgames|loteria|barbearia|barba/], ['educacao', /educa|curso|escola|faculd|udemy|alura|livraria/],
+      ['transporte', /\buber\b|99\s?(app|pop)|\bposto\b|combust|shell|ipiranga|estacion|ped[aá]gio|sem parar/], ['alimentacao', /ifood|restaur|lanch|padaria|supermerc|atacad|assa[ií]|carrefour|burger|pizza|a[cç]ougue|\bmerc(ado)?\b(?!\s*livre)|hortifruti|\bhiper\b|\bsuper\b|carne|feira|espeto|churrasc|bar\b|cafe/],
       ['eletronicos', /eletr|kabum|pichau|terabyte|samsung|apple|xiaomi/], ['servicos', /claro|vivo|tim\b|oi\b|internet|google|microsoft|icloud|anuidade|seguro/],
       ['compras', /amazon|shopee|mercado ?livre|mercadolivre|magalu|magazine|americanas|shein|aliexpress|itaushop|loja|store/]
     ];
@@ -188,7 +194,8 @@
     desc: /descri|estabelec|hist[oó]rico|lan[cç]amento|loja|^item|nome|detalhe|merchant|t[ií]tulo/i,
     amount: /valor|r\$|montante|amount|pre[cç]o|quantia|d[eé]bito/i,
     parcela: /parcela|^parc\b|presta[cç]/i,
-    category: /categoria|classifica|^tipo\b/i
+    category: /categoria|classifica|^tipo\b(?!.*cart)/i,
+    holder: /portador|titular|adicional|usu[aá]rio|quem|respons[aá]vel/i
   };
   const isDateObj = (v) => v instanceof Date && !isNaN(v);
 
@@ -248,7 +255,7 @@
 
   /** Descobre a linha de cabeçalho e quais colunas são data, descrição, valor… */
   function detectSheetMapping(rows) {
-    const map = { headerRow: -1, date: -1, desc: -1, amount: -1, parcela: -1, category: -1 };
+    const map = { headerRow: -1, date: -1, desc: -1, amount: -1, parcela: -1, category: -1, holder: -1 };
     let best = 0;
     for (let r = 0; r < Math.min(rows.length, 30); r++) {
       const row = rows[r] || [];
@@ -259,12 +266,12 @@
         const t = String(c ?? '').trim();
         if (!t || t.length > 40) return;
         if (/valor/i.test(t)) { if (found.amount == null || (/total/i.test(found.amountTxt) && !/total/i.test(t))) { found.amount = i; found.amountTxt = t; } return; }
-        for (const k of ['date', 'parcela', 'category', 'desc', 'amount']) {
+        for (const k of ['date', 'parcela', 'category', 'holder', 'desc', 'amount']) {
           if (found[k] == null && HDR[k].test(t)) { found[k] = i; if (k === 'amount') found.amountTxt = t; return; }
         }
       });
-      const score = ['date', 'desc', 'amount', 'parcela', 'category'].filter((k) => found[k] != null).length;
-      if (score > best && score >= 2 && found.amount != null) { best = score; Object.assign(map, { headerRow: r, date: found.date ?? -1, desc: found.desc ?? -1, amount: found.amount, parcela: found.parcela ?? -1, category: found.category ?? -1 }); }
+      const score = ['date', 'desc', 'amount', 'parcela', 'category', 'holder'].filter((k) => found[k] != null).length;
+      if (score > best && score >= 2 && found.amount != null) { best = score; Object.assign(map, { headerRow: r, date: found.date ?? -1, desc: found.desc ?? -1, amount: found.amount, parcela: found.parcela ?? -1, category: found.category ?? -1, holder: found.holder ?? -1 }); }
     }
     // completa pelo conteúdo o que o cabeçalho não indicou
     const body = rows.slice(map.headerRow + 1, map.headerRow + 200);
@@ -280,12 +287,25 @@
       });
       return { i, dates, nums, texts, avg: texts ? len / texts : 0 };
     });
-    const used = () => [map.date, map.desc, map.amount, map.parcela, map.category];
+    const used = () => [map.date, map.desc, map.amount, map.parcela, map.category, map.holder];
     const pick = (fn, key) => stats.filter((s) => !used().includes(s.i)).sort((a, b) => fn(b) - fn(a))[0];
     if (map.date < 0) { const s = pick((s) => s.dates); if (s && s.dates) map.date = s.i; }
     if (map.amount < 0) { const s = pick((s) => s.nums); if (s && s.nums) map.amount = s.i; }
     if (map.desc < 0) { const s = pick((s) => s.texts * 10 + s.avg); if (s && s.texts) map.desc = s.i; }
     return map;
+  }
+
+  /** Procura "Vencimento" no topo da planilha e devolve o mês da fatura (AAAA-MM). */
+  function detectSheetInvoice(rows) {
+    for (let r = 0; r < Math.min(rows.length, 25); r++) {
+      const row = rows[r] || [];
+      for (let c = 0; c < row.length; c++) {
+        if (!/^\s*(data\s+de\s+)?vencimento/i.test(String(row[c] ?? ''))) continue;
+        const cands = [row[c + 1], row[c + 2], (rows[r + 1] || [])[c], (rows[r + 2] || [])[c]];
+        for (const v of cands) { const d = cellToDate(v); if (d) return d.slice(0, 7); }
+      }
+    }
+    return '';
   }
 
   /** Lista as colunas para os seletores de mapeamento. */
@@ -321,7 +341,8 @@
       }
       const n = p ? p.n : 1, of = p ? p.of : 1;
       const date = map.date >= 0 ? cellToDate(row[map.date], opts.invoiceMonth) : '';
-      items.push({ date, desc: tidy(desc), raw: desc, amount: Math.round(amount * 100) / 100, n, of, catLabel: map.category >= 0 ? String(row[map.category] ?? '').trim() : '' });
+      const bankStyle = /\*|[a-z](bra)$/i.test(desc);
+      items.push({ date, desc: bankStyle ? cleanMerchant(desc) : tidy(desc), raw: desc, amount: Math.round(amount * 100) / 100, n, of, catLabel: map.category >= 0 ? String(row[map.category] ?? '').trim() : '', holderLabel: map.holder >= 0 ? String(row[map.holder] ?? '').trim() : '' });
     }
     return items;
   }
@@ -344,6 +365,6 @@
     return rows.filter((r) => r.some((c) => String(c).trim() !== ''));
   }
 
-  const api = { cleanMerchant, cellToDate, cellToNumber, cellToParcela, detectSheetMapping, sheetColumns, negativesAreExpenses, sheetToItems, parseCSV, parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
+  const api = { detectSheetInvoice, cleanMerchant, cellToDate, cellToNumber, cellToParcela, detectSheetMapping, sheetColumns, negativesAreExpenses, sheetToItems, parseCSV, parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
   if (typeof module !== 'undefined') module.exports = api; else root.Parsers = api;
 })(typeof window !== 'undefined' ? window : globalThis);

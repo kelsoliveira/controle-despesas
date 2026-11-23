@@ -317,6 +317,23 @@ code { font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--
 .dup-group { border: 1px solid var(--border); border-radius: 12px; padding: 4px 14px 10px; margin-bottom: 10px; background: var(--surface-2); }
 .dup-group .list-item { gap: 8px; }
 
+/* Portadores */
+.badge.holder { gap: 4px; padding: 1px 8px 1px 6px; vertical-align: 2px; font-weight: 600; }
+.badge.holder i { width: 12px; height: 12px; }
+.badge.holder.is-add { background: color-mix(in srgb, #6250d6 14%, transparent); color: #6250d6; border-color: transparent; }
+:root[data-mode='dark'] .badge.holder.is-add { color: #b3abff; }
+.holder-split { border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; background: var(--surface-2); }
+.holder-cards { display: flex; gap: 10px; flex-wrap: wrap; }
+.holder-card { text-align: left; border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 10px 14px; min-width: 180px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.holder-card span { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text-2); }
+.holder-card span i { width: 14px; height: 14px; }
+.holder-card b { font-family: var(--font-display); font-size: 18px; font-variant-numeric: tabular-nums; }
+.holder-card small { color: var(--text-3); }
+.holder-card.active { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.holder-card .bar { display: block; height: 6px; border-radius: 99px; background: var(--surface-2); margin-top: 6px; overflow: hidden; }
+.holder-card .bar i { display: block; height: 100%; background: var(--primary); border-radius: 99px; }
+#holderField[hidden] { display: none; }
+
 /* ===================== Responsivo ===================== */
 @media (max-width: 1180px) {
   .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }

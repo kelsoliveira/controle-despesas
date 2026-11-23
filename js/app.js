@@ -21,6 +21,7 @@
     moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/>',
     trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>',
     wallet: '<path d="M20 7H5a2 2 0 010-4h13v4"/><path d="M3 5v14a2 2 0 002 2h15V7"/><circle cx="16" cy="14" r="1.5"/>',
@@ -64,7 +65,7 @@
   const catOptions = (sel) => Object.entries(CATS).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v.name}</option>`).join('');
 
   // ---------------- Estado de UI ----------------
-  const ui = { month: null, cardSel: null, cardMonth: null, txFilter: { account: 'all', q: '', scope: 'month' }, horizon: 12, showDone: false, sim: null };
+  const ui = { month: null, cardSel: null, cardMonth: null, txFilter: { account: 'all', q: '', scope: 'month', holder: 'all' }, cardHolder: 'all', horizon: 12, showDone: false, sim: null };
 
   function initMonth() {
     const t = ym.today(), s = S().settings.startMonth;
@@ -83,6 +84,34 @@
   }
   const commit = (msg) => { Core.save(); render(); if (msg) toast(msg); };
   const card = (id) => S().cards.find((c) => c.id === id);
+  // ---- Portadores (titular e cartões adicionais) ----
+  const holdersOf = (c) => (c && c.holders && c.holders.length ? c.holders : [{ id: 'titular', name: 'Titular' }]);
+  const multiHolder = (c) => !!c && holdersOf(c).length > 1;
+  const normTxt = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  function holderName(t) {
+    const c = card(t.account); if (!c) return '';
+    const id = t.holder || 'titular';
+    const h = holdersOf(c).find((x) => x.id === id);
+    return h ? h.name : id === 'adicional' ? 'Adicional' : 'Titular';
+  }
+  function holderBadge(t) {
+    const c = card(t.account);
+    if (!c || (!multiHolder(c) && (t.holder || 'titular') === 'titular')) return '';
+    const add = (t.holder || 'titular') !== 'titular';
+    return `<span class="badge holder ${add ? 'is-add' : ''}">${icon('user')}${esc(holderName(t))}</span>`;
+  }
+  function ensureHolder(c, id, name) {
+    if (!c.holders || !c.holders.length) c.holders = [{ id: 'titular', name: 'Titular' }];
+    if (!c.holders.find((h) => h.id === id)) c.holders.push({ id, name });
+    return id;
+  }
+  /** Opções de portador para um cartão; se só houver titular, oferece "Adicional". */
+  function holderOptions(c, sel, extra = []) {
+    const list = holdersOf(c).slice();
+    if (list.length === 1) list.push({ id: 'adicional', name: 'Adicional' });
+    extra.forEach((e) => { if (!list.find((h) => h.id === e.id)) list.push(e); });
+    return list.map((h) => `<option value="${esc(h.id)}" ${h.id === (sel || 'titular') ? 'selected' : ''}>${esc(h.name)}</option>`).join('');
+  }
   const seriesColor = { fixas: Charts.slot(0), conta: Charts.slot(4) };
   const money = (v, cls = '') => `<span class="money ${cls}">${fmt.money(v)}</span>`;
   const daysInMonth = (m) => { const [y, mm] = m.split('-').map(Number); return new Date(y, mm, 0).getDate(); };
@@ -372,18 +401,41 @@
           </div>
         </div>
 
+        ${holderSummaryHTML(c, inv)}
         <div class="table-wrap mt"><table>
           <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Parcela</th><th class="r">Valor</th><th></th></tr></thead>
-          <tbody>${inv.items.length ? inv.items.map((it) => txRow(it.tx, it)).join('') : `<tr><td colspan="6" class="empty">${inv.override != null ? 'Fatura informada apenas pelo total — itens não detalhados.' : 'Sem lançamentos nesta fatura.'}</td></tr>`}</tbody>
+          <tbody>${inv.items.length ? inv.items.filter((it) => ui.cardHolder === 'all' || (it.tx.holder || 'titular') === ui.cardHolder).map((it) => txRow(it.tx, it)).join('') : `<tr><td colspan="6" class="empty">${inv.override != null ? 'Fatura informada apenas pelo total — itens não detalhados.' : 'Sem lançamentos nesta fatura.'}</td></tr>`}</tbody>
           ${inv.items.length ? `<tfoot><tr><td colspan="4">Soma dos lançamentos</td><td class="r">${fmt.money(inv.computed)}</td><td></td></tr></tfoot>` : ''}
         </table></div>
       </div>`;
+  }
+  function holderSummaryHTML(c, inv) {
+    const ids = new Set(holdersOf(c).map((h) => h.id));
+    inv.items.forEach((it) => ids.add(it.tx.holder || 'titular'));
+    if (ids.size < 2) { ui.cardHolder = 'all'; return ''; }
+    if (ui.cardHolder !== 'all' && !ids.has(ui.cardHolder)) ui.cardHolder = 'all';
+    const sum = (id) => inv.items.filter((it) => (it.tx.holder || 'titular') === id).reduce((a, it) => a + it.amount, 0);
+    const total = inv.computed || 1;
+    const name = (id) => holderName({ account: c.id, holder: id });
+    const rest = inv.override != null ? inv.override - inv.computed : 0;
+    return `<div class="holder-split mt">
+      <div class="panel-head" style="margin-bottom:10px">${icon('user')}<h3>Quem gastou nesta fatura</h3><span class="sub">clique para filtrar os lançamentos</span></div>
+      <div class="holder-cards">
+        <button type="button" class="holder-card ${ui.cardHolder === 'all' ? 'active' : ''}" data-holder="all"><span>Todos</span><b>${fmt.money(inv.computed)}</b><small>${inv.items.length} lançamentos</small></button>
+        ${[...ids].map((id) => { const v = sum(id); const n = inv.items.filter((it) => (it.tx.holder || 'titular') === id).length; return `
+          <button type="button" class="holder-card ${ui.cardHolder === id ? 'active' : ''}" data-holder="${esc(id)}">
+            <span>${icon('user')}${esc(name(id))}</span><b>${fmt.money(v)}</b><small>${n} lançamentos · ${fmt.pct(v / total)}</small>
+            <i class="bar"><i style="width:${Math.max(0, Math.min(100, (v / total) * 100)).toFixed(1)}%"></i></i>
+          </button>`; }).join('')}
+      </div>
+      ${Math.abs(rest) >= 0.01 ? `<div class="cell-sub" style="margin-top:8px">O valor oficial da fatura tem ${fmt.money(rest)} não detalhados em lançamentos (sem portador identificado).</div>` : ''}
+    </div>`;
   }
   function txRow(t, it) {
     const cat = CATS[t.category] || CATS.outros;
     return `<tr>
       <td class="num">${fmt.date(t.date)}</td>
-      <td><div class="cell-title">${esc(t.desc)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
+      <td><div class="cell-title">${esc(t.desc)} ${holderBadge(t)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
       <td><span class="badge">${esc(cat.name)}</span></td>
       <td>${t.installments > 1 ? `<span class="badge primary">${it ? it.n : ''}${it ? ' de ' : ''}${t.installments}${it ? '' : 'x'}</span>` : '<span class="muted">à vista</span>'}</td>
       <td class="r ${t.amount < 0 ? 'pos' : ''}"><b>${fmt.money(t.amount)}</b></td>
@@ -391,8 +443,9 @@
     </tr>`;
   }
   function afterCartoes() {
-    $$('[data-card]').forEach((e) => e.addEventListener('click', () => { ui.cardSel = e.dataset.card; ui.cardMonth = null; render(); }));
+    $$('[data-card]').forEach((e) => e.addEventListener('click', () => { ui.cardSel = e.dataset.card; ui.cardMonth = null; ui.cardHolder = 'all'; render(); }));
     $$('#chips .chip').forEach((e) => e.addEventListener('click', () => { ui.cardMonth = e.dataset.m; render(); }));
+    $$('[data-holder]').forEach((e) => e.addEventListener('click', () => { ui.cardHolder = e.dataset.holder; render(); }));
     const c = card(ui.cardSel); if (!c) return;
     const cm = ui.cardMonth || ui.month, key = c.id + '|' + cm;
     const p = $('#invPaid'); if (p) p.addEventListener('change', () => { if (p.checked) S().invoicePaid[key] = true; else delete S().invoicePaid[key]; commit('Fatura atualizada'); });
@@ -427,7 +480,7 @@
         <div class="table-wrap"><table>
           <thead><tr><th>Compra</th><th>Cartão</th><th>Andamento</th><th class="r">Parcela</th><th class="r">Restam</th><th class="r">Saldo</th><th>Última</th><th></th></tr></thead>
           <tbody>${list.length ? list.map(({ t, r, cur }) => `<tr>
-            <td><div class="cell-title">${esc(t.desc)}</div><div class="cell-sub">${fmt.date(t.date)} · total ${fmt.money(t.amount * t.installments)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
+            <td><div class="cell-title">${esc(t.desc)} ${holderBadge(t)}</div><div class="cell-sub">${fmt.date(t.date)} · total ${fmt.money(t.amount * t.installments)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
             <td><span class="badge"><i class="dot" style="background:${Charts.tone((card(t.account) || {}).color || seriesColor.conta)}"></i>${esc(Core.accountName(t.account))}</span></td>
             <td style="min-width:140px"><div class="cell-sub">${cur} de ${t.installments}</div><div class="progress"><span style="width:${(cur / t.installments) * 100}%"></span></div></td>
             <td class="r">${fmt.money(t.amount)}</td><td class="r">${r.left}x</td><td class="r"><b>${fmt.money(r.value)}</b></td>
@@ -495,6 +548,8 @@
     let list = S().transactions.slice();
     if (f.account !== 'all') list = list.filter((t) => t.account === f.account);
     if (f.q) { const q = f.q.toLowerCase(); list = list.filter((t) => t.desc.toLowerCase().includes(q)); }
+    const holderNames = [...new Set(S().cards.filter(multiHolder).flatMap((c) => holdersOf(c).map((h) => h.name)))];
+    if (f.holder !== 'all' && holderNames.includes(f.holder)) list = list.filter((t) => card(t.account) && holderName(t) === f.holder);
     let rows;
     if (f.scope === 'month') rows = list.map((t) => ({ t, it: Core.installmentIn(t, m) })).filter((x) => x.it);
     else rows = list.map((t) => ({ t, it: null }));
@@ -517,6 +572,7 @@
         <div class="toolbar">
           <input type="text" id="tq" placeholder="Buscar descrição…" value="${esc(f.q)}" />
           <select id="tAcc"><option value="all">Todas as contas</option>${accountOptions(f.account)}</select>
+          ${holderNames.length ? `<select id="tHold"><option value="all">Todos os portadores</option>${holderNames.map((n) => `<option value="${esc(n)}" ${f.holder === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>` : ''}
           <div class="segmented" id="tScope"><button type="button" data-s="month" class="${f.scope === 'month' ? 'active' : ''}">Cobranças de ${fmt.month(m)}</button><button type="button" data-s="all" class="${f.scope === 'all' ? 'active' : ''}">Todas as compras</button></div>
           <span class="spacer" style="flex:1"></span>
           <button class="btn btn-primary btn-sm" data-act="tx-new">${icon('plus')}Novo gasto</button>
@@ -525,7 +581,7 @@
           <thead><tr><th>Data</th><th>Descrição</th><th>Conta</th><th>Categoria</th><th>Parcelas</th><th class="r">${f.scope === 'month' ? 'Valor no mês' : 'Valor total'}</th><th></th></tr></thead>
           <tbody>${rows.length ? rows.map(({ t, it }) => { const cat = CATS[t.category] || CATS.outros; const v = it ? it.amount : t.amount * t.installments; return `<tr>
             <td class="num">${fmt.date(t.date)}</td>
-            <td><div class="cell-title">${esc(t.desc)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
+            <td><div class="cell-title">${esc(t.desc)} ${holderBadge(t)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
             <td><span class="badge"><i class="dot" style="background:${Charts.tone((card(t.account) || {}).color || seriesColor.conta)}"></i>${esc(Core.accountName(t.account))}</span></td>
             <td>${esc(cat.name)}</td>
             <td>${t.installments > 1 ? `<span class="badge primary">${it ? it.n + ' de ' + t.installments : t.installments + 'x de ' + fmt.money(t.amount)}</span>` : '<span class="muted">à vista</span>'}</td>
@@ -540,6 +596,7 @@
     const q = $('#tq');
     q.addEventListener('input', () => { ui.txFilter.q = q.value; const pos = q.selectionStart; render(); const n = $('#tq'); n.focus(); n.setSelectionRange(pos, pos); });
     $('#tAcc').addEventListener('change', (e) => { ui.txFilter.account = e.target.value; render(); });
+    const th = $('#tHold'); if (th) th.addEventListener('change', () => { ui.txFilter.holder = th.value; render(); });
     $$('#tScope button').forEach((b) => b.addEventListener('click', () => { ui.txFilter.scope = b.dataset.s; render(); }));
     $$('[data-dupdel]').forEach((b) => b.addEventListener('click', () => {
       const t = S().transactions.find((x) => x.id === b.dataset.dupdel);
@@ -632,6 +689,7 @@
   function openModal(html, onSubmit) {
     const dlg = $('#modal'), form = $('#modalForm');
     form.innerHTML = html; hydrateIcons(form);
+    form.onchange = null; form.oninput = null;
     form.onsubmit = (e) => {
       if (e.submitter && e.submitter.value === 'cancel') return;
       e.preventDefault();
@@ -663,6 +721,7 @@
         <div class="field full"><label>Descrição</label><input type="text" name="desc" required value="${esc(t.desc)}" placeholder="Ex.: Supermercado" /></div>
         <div class="field"><label>Conta / cartão</label><select name="account">${accountOptions(t.account)}</select></div>
         <div class="field"><label>Categoria</label><select name="category">${catOptions(t.category)}</select></div>
+        <div class="field" id="holderField"><label>Portador (quem gastou)</label><select name="holder"></select></div>
         <div class="field"><label>Data da compra</label><input type="date" name="date" required value="${t.date}" /></div>
         <div class="field"><label>Parcelas</label><input type="number" name="installments" min="1" max="72" value="${t.installments}" required /></div>
         <div class="field"><label>Valor</label><input type="number" name="amount" step="0.01" required value="${t.amount === '' ? '' : t.amount}" /><span class="hint">Negativo para estorno/reembolso.</span></div>
@@ -674,14 +733,22 @@
       let amount = +f.get('amount');
       if (f.get('mode') === 'total') amount = Math.round((amount / n) * 100) / 100;
       const data = { account: f.get('account'), desc: f.get('desc').trim(), category: f.get('category'), date: f.get('date'), installments: n, amount, note: f.get('note').trim() };
+      const c = card(data.account);
+      if (c) { data.holder = f.get('holder') || 'titular'; if (data.holder === 'adicional') ensureHolder(c, 'adicional', 'Adicional'); } else data.holder = undefined;
       data.firstMonth = f.get('firstMonth') || firstInvoiceMonth(data.account, data.date);
       if (isNew) S().transactions.push({ id: Core.uid(), ...data }); else Object.assign(t, data);
       commit(isNew ? 'Gasto lançado' : 'Lançamento atualizado');
     });
+    const updHolder = () => {
+      const c = card(form.account.value);
+      $('#holderField', form).hidden = !c;
+      if (c) form.holder.innerHTML = holderOptions(c, form.holder.value || t.holder || preset.holder);
+    };
     const upd = () => {
       const acc = form.account.value, d = form.date.value;
       $('#fmHint', form).textContent = d ? `Automático: ${fmt.monthLong(firstInvoiceMonth(acc, d))}.` : '';
     };
+    form.account.addEventListener('change', updHolder); updHolder();
     form.account.addEventListener('change', upd); form.date.addEventListener('change', upd); upd();
   }
 
@@ -722,8 +789,21 @@
         <div class="field"><label>Dia de vencimento</label><input type="number" name="dueDay" min="1" max="31" required value="${c.dueDay}" /></div>
         <div class="field"><label>Limite (R$)</label><input type="number" name="limit" step="0.01" min="0" value="${c.limit || ''}" /></div>
         <div class="field"><label>Cor do cartão</label><input type="color" name="brandColor" value="${c.brandColor || '#334155'}" style="height:40px;padding:4px" /></div>
+        <div class="field"><label>Nome do titular</label><input type="text" name="holderMain" value="${esc(holdersOf(c)[0].name)}" placeholder="Titular" /></div>
+        <div class="field"><label>Cartões adicionais</label><input type="text" name="holderAdds" value="${esc(holdersOf(c).slice(1).map((h) => h.name).join(', '))}" placeholder="Ex.: Adicional, Maria" /><span class="hint">Nomes ou apelidos separados por vírgula.</span></div>
       </div>${actions()}`, (f) => {
       const data = { name: f.get('name').trim(), brand: f.get('brand').trim(), closingDay: +f.get('closingDay'), dueDay: +f.get('dueDay'), limit: +f.get('limit') || 0, brandColor: f.get('brandColor') };
+      // portadores: mantém os ids existentes pela ordem
+      const old = holdersOf(c).slice(1);
+      const names = String(f.get('holderAdds') || '').split(',').map((x) => x.trim()).filter(Boolean);
+      const adds = names.map((n, i) => ({ id: old[i] ? old[i].id : (normTxt(n) === 'adicional' && !old.find((h) => h.id === 'adicional') ? 'adicional' : Core.uid()), name: n }));
+      const removed = old.filter((h) => !adds.find((a) => a.id === h.id));
+      if (!isNew && removed.length) {
+        const n = S().transactions.filter((t) => t.account === c.id && removed.some((h) => h.id === t.holder)).length;
+        if (n && !confirm(`${n} lançamento(s) de ${removed.map((h) => h.name).join(', ')} passarão para o titular. Continuar?`)) return false;
+        S().transactions.forEach((t) => { if (t.account === c.id && removed.some((h) => h.id === t.holder)) t.holder = 'titular'; });
+      }
+      data.holders = [{ id: 'titular', name: String(f.get('holderMain') || '').trim() || 'Titular' }, ...adds];
       let newId = null;
       if (isNew) { newId = Core.uid(); S().cards.push({ id: newId, color: c.color, ...data }); ui.cardSel = newId; } else Object.assign(c, data);
       commit('Cartão salvo');
@@ -769,6 +849,23 @@
       ${hasItems ? reviewHTML() : ''}`;
   }
 
+  /** Portador sugerido para um item importado (pelo print, seção do PDF ou coluna da planilha). */
+  function importHolder(it) {
+    if (it.holderSel) return it.holderSel;
+    const c = card(imp.account); if (!c) return 'titular';
+    const hs = holdersOf(c), firstAdd = (hs.find((x) => x.id !== 'titular') || { id: 'adicional' }).id;
+    if (it.holderLabel) {
+      const n = normTxt(it.holderLabel), h = hs.find((x) => normTxt(x.name) === n);
+      if (h) return h.id;
+      if (/adicional/.test(n)) return firstAdd;
+      if (/titular/.test(n)) return 'titular';
+      return 'new:' + it.holderLabel;
+    }
+    if (it.ref) return (c.refs && c.refs[it.ref]) || (it.ref === imp.firstRef ? 'titular' : firstAdd);
+    if (it.holder === 'adicional') return firstAdd;
+    return 'titular';
+  }
+
   function firstMonthFor(it) {
     if (imp.account === 'conta') return (it.date || '').slice(0, 7) || imp.invoiceMonth;
     if (imp.monthMode === 'date' && it.date) return firstInvoiceMonth(imp.account, it.date);
@@ -776,13 +873,13 @@
   }
   /** Mesmo valor e (mesma compra pela data ±3 dias OU mesmo parcelamento na mesma fatura). */
   function sameTx(a, b) {
-    if (a.account !== b.account || Math.abs(a.amount - b.amount) >= 0.01) return false;
+    if (a.account !== b.account || Math.abs(a.amount - b.amount) > 0.015) return false; // 1ª parcela pode variar 1 centavo
     if (a.date && b.date) return Math.abs(new Date(a.date) - new Date(b.date)) <= 3 * 86400000;
     return a.installments === b.installments && a.firstMonth === b.firstMonth;
   }
   function findExisting(it) {
     const cand = { account: imp.account, amount: it.amount, date: it.date, installments: it.of, firstMonth: firstMonthFor(it) };
-    return S().transactions.find((t) => sameTx(t, cand) || (t.account === cand.account && Math.abs(t.amount - cand.amount) < 0.01 && t.installments === cand.installments && t.firstMonth === cand.firstMonth));
+    return S().transactions.find((t) => sameTx(t, cand) || (t.account === cand.account && Math.abs(t.amount - cand.amount) <= 0.015 && t.installments === cand.installments && t.firstMonth === cand.firstMonth));
   }
   function isDuplicate(it) { it.dupOf = findExisting(it) || null; return !!it.dupOf; }
   const aliasKey = (raw) => String(raw || '').toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '');
@@ -820,12 +917,13 @@
         ${imp.sheets.map(sheetMapHTML).join('')}
         ${dups ? `<div class="alert mt" style="margin-bottom:0">${icon('info')}<div><b>${dups} lançamento(s) já existem</b> neste cartão com o mesmo valor e parcelas — vieram desmarcados.</div></div>` : ''}
         <div class="table-wrap mt"><table class="review">
-          <thead><tr><th><input type="checkbox" id="impAll" ${sel.length === imp.items.length ? 'checked' : ''} aria-label="Selecionar todos"/></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Parcela</th><th class="r">Valor da parcela</th><th>Situação</th></tr></thead>
+          <thead><tr><th><input type="checkbox" id="impAll" ${sel.length === imp.items.length ? 'checked' : ''} aria-label="Selecionar todos"/></th><th>Data</th><th>Descrição</th><th>Categoria</th>${card(imp.account) ? '<th>Portador</th>' : ''}<th>Parcela</th><th class="r">Valor da parcela</th><th>Situação</th></tr></thead>
           <tbody>${imp.items.map((it, i) => `<tr class="${it.on ? '' : 'off'}">
             <td><input type="checkbox" data-i="${i}" data-f="on" ${it.on ? 'checked' : ''} aria-label="Importar"/></td>
             <td><input type="date" data-i="${i}" data-f="date" value="${it.date}" /></td>
             <td><input type="text" data-i="${i}" data-f="desc" value="${esc(it.desc)}" /></td>
             <td><select data-i="${i}" data-f="category">${catOptions(it.category)}</select></td>
+            ${card(imp.account) ? `<td><select data-i="${i}" data-f="holderSel">${(() => { const h = importHolder(it); return holderOptions(card(imp.account), h, h.startsWith('new:') ? [{ id: h, name: h.slice(4) + ' (novo)' }] : []); })()}</select></td>` : ''}
             <td><div class="parc"><input type="number" min="1" max="72" data-i="${i}" data-f="n" value="${it.n}" /><span>de</span><input type="number" min="1" max="72" data-i="${i}" data-f="of" value="${it.of}" /></div></td>
             <td class="r"><input type="number" step="0.01" data-i="${i}" data-f="amount" value="${it.amount}" class="r" /></td>
             <td>${it.dup ? `<span class="badge warn" title="${esc((it.dupOf ? it.dupOf.desc + ' · ' + fmt.date(it.dupOf.date) + ' · ' + it.dupOf.installments + 'x' : ''))}">já existe${it.dupOf ? ': ' + esc(it.dupOf.desc.slice(0, 22)) : ''}</span>` : it.income ? '<span class="badge" title="Entradas não são gastos — a renda é informada em Configurações">entrada</span>' : '<span class="badge good">novo</span>'}</td>
@@ -852,7 +950,7 @@
         ${sh.sheets.length > 1 ? `<select data-sh="${k}" data-sheet style="width:auto">${sh.sheets.map((x, i) => `<option value="${i}" ${i === sh.sel ? 'selected' : ''}>Aba: ${esc(x.name)}</option>`).join('')}</select>` : ''}
         <span class="sub">${m.headerRow >= 0 ? 'cabeçalho na linha ' + (m.headerRow + 1) : 'sem cabeçalho'} · confira as colunas</span></div>
       <div class="map-grid">
-        ${sel('date', 'Data', true)}${sel('desc', 'Descrição', true)}${sel('amount', 'Valor', false)}${sel('parcela', 'Parcela (ex.: 2/10)', true)}${sel('category', 'Categoria', true)}
+        ${sel('date', 'Data', true)}${sel('desc', 'Descrição', true)}${sel('amount', 'Valor', false)}${sel('parcela', 'Parcela (ex.: 2/10)', true)}${sel('category', 'Categoria', true)}${sel('holder', 'Portador', true)}
         <div class="field"><label>Os gastos aparecem como</label><select data-sh="${k}" data-neg><option value="0" ${sh.neg ? '' : 'selected'}>Valores positivos</option><option value="1" ${sh.neg ? 'selected' : ''}>Valores negativos</option></select></div>
       </div>
       ${prev.length ? `<div class="cell-sub" style="margin-top:8px">Primeiras linhas: ${prev.map((r) => esc((r || []).filter((c) => c != null && c !== '').map((c) => c instanceof Date ? c.toISOString().slice(0, 10) : String(c)).join(' · ').slice(0, 120))).join(' &nbsp;|&nbsp; ')}</div>` : ''}
@@ -879,16 +977,22 @@
       if (r.invoiceMonth && !header.invoiceMonth) header.invoiceMonth = r.invoiceMonth;
       all.push(...r.items);
     });
+    const textItems = Parsers.dedupe(all.splice(0)); // prints que se sobrepõem
+    all.push(...textItems);
     imp.sheets.forEach((sh) => {
-      all.push(...Parsers.sheetToItems(sh.sheets[sh.sel].rows, sh.map, { invoiceMonth: imp.invoiceMonth, negativeIsExpense: sh.neg }));
+      const rows = sh.sheets[sh.sel].rows;
+      const due = Parsers.detectSheetInvoice(rows);
+      if (due && !header.invoiceMonth) header.invoiceMonth = due;
+      all.push(...Parsers.sheetToItems(rows, sh.map, { invoiceMonth: imp.invoiceMonth || due, negativeIsExpense: sh.neg }));
     });
     imp.header = header;
+    imp.firstRef = (all.find((x) => x.ref) || {}).ref || '';
     if (!imp.invoiceMonth) {
       imp.invoiceMonth = header.invoiceMonth || ui.month;
       if (!header.invoiceMonth) return reparse(); // refaz com o mês para acertar os anos
     }
     const aliases = S().aliases || {};
-    imp.items = Parsers.dedupe(all).map((it) => {
+    imp.items = all.map((it) => {
       const al = aliases[aliasKey(it.raw)];
       const desc = al ? al.desc : it.desc;
       return { ...it, desc, auto: desc, category: al && al.category ? al.category : catFromLabel(it.catLabel, desc, it.amount), on: true };
@@ -935,7 +1039,8 @@
       // planilha com compras de vários meses: calcula a fatura pela data de cada compra
       if (imp.sheets.length && !imp.texts.length) {
         const ds = imp.items.map((i) => i.date).filter(Boolean).sort();
-        if (ds.length && ym.diff(ds[0].slice(0, 7), ds[ds.length - 1].slice(0, 7)) >= 1) { imp.monthMode = 'date'; markDups(); }
+        const hasParcelInfo = imp.items.some((i) => i.n > 1);
+        if (ds.length && !imp.header.invoiceMonth && !hasParcelInfo && ym.diff(ds[0].slice(0, 7), ds[ds.length - 1].slice(0, 7)) >= 1) { imp.monthMode = 'date'; markDups(); }
       }
       imp.busy = false;
       render();
@@ -998,8 +1103,17 @@
         const k = aliasKey(it.raw);
         if (k && (it.desc.trim() !== it.auto || (S().aliases[k] && S().aliases[k].category !== it.category))) S().aliases[k] = { desc: it.desc.trim(), category: it.category };
       });
+      const c = card(imp.account), newIds = {};
+      const holderFor = (it) => {
+        if (!c) return undefined;
+        let h = importHolder(it);
+        if (h === 'adicional') ensureHolder(c, 'adicional', 'Adicional');
+        if (h.startsWith('new:')) { const name = h.slice(4); h = newIds[name] || (newIds[name] = ensureHolder(c, Core.uid(), name)); }
+        if (it.ref) { c.refs = c.refs || {}; c.refs[it.ref] = h; } // lembra qual final é de quem
+        return h;
+      };
       sel.forEach((it) => S().transactions.push({
-        id: Core.uid(), account: imp.account, date: it.date, desc: it.desc.trim(), category: it.category,
+        id: Core.uid(), account: imp.account, holder: holderFor(it), date: it.date, desc: it.desc.trim(), category: it.category,
         amount: Math.round(it.amount * 100) / 100, installments: Math.max(1, it.of), firstMonth: firstMonthFor(it), note: ''
       }));
       if (imp.useTotal && imp.header.total && imp.account !== 'conta' && imp.monthMode === 'invoice') S().invoiceOverrides[imp.account + '|' + imp.invoiceMonth] = imp.header.total;
@@ -1162,7 +1276,7 @@
           <div class="cell-sub" style="margin-top:6px">${list.slice(0, 8).map((t) => esc(t.desc)).join(', ')}${list.length > 8 ? ` e mais ${list.length - 8}…` : ''}</div></div></div>`;
       const go = $('#bulkGo', form); go.disabled = !list.length; go.textContent = list.length ? `Excluir ${list.length} lançamentos` : 'Excluir';
     };
-    form.addEventListener('change', upd); form.addEventListener('input', upd); upd();
+    form.onchange = upd; form.oninput = upd; upd(); // limpos ao abrir outro modal
   }
 
   // ======================================================
