@@ -721,20 +721,20 @@
   // ======================================================
   // IMPORTAR (PDF e prints)
   // ======================================================
-  const imp = { files: [], texts: [], header: {}, items: [], account: '', invoiceMonth: '', useTotal: true, busy: false, progress: '' };
+  const imp = { files: [], texts: [], sheets: [], header: {}, items: [], account: '', invoiceMonth: '', monthMode: 'invoice', useTotal: true, busy: false, progress: '' };
 
   function viewImportar() {
     const fileProto = location.protocol === 'file:';
-    const hasItems = imp.items.length > 0;
+    const hasItems = imp.items.length > 0 || imp.sheets.length > 0;
     return `
-      ${fileProto ? `<div class="alert">${icon('alert')}<div><b>Abra o sistema pelo endereço do site</b> (GitHub Pages) ou por um servidor local para ler PDF e imagens — o Chrome bloqueia esse recurso em arquivos abertos direto do disco.</div></div>` : ''}
+      ${fileProto ? `<div class="alert">${icon('alert')}<div><b>Abra o sistema pelo endereço do site</b> (GitHub Pages) ou por um servidor local para ler PDF e imagens — o Chrome bloqueia esse recurso em arquivos abertos direto do disco. Planilhas (XLSX/CSV) funcionam normalmente.</div></div>` : ''}
       <div class="panel">
-        <div class="panel-head"><h2>Importar fatura ou prints</h2><span class="sub">PDF da fatura ou capturas de tela do app do banco</span></div>
+        <div class="panel-head"><h2>Importar fatura, prints ou planilha</h2><span class="sub">PDF, capturas de tela do app do banco, Excel (XLSX) ou CSV</span><span class="spacer"></span><button class="btn btn-sm" type="button" id="impTpl">${icon('download')}Modelo de planilha</button></div>
         <label class="dropzone" id="drop">
-          <input type="file" id="impFiles" accept="application/pdf,image/*" multiple hidden />
+          <input type="file" id="impFiles" accept="application/pdf,image/*,.xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden />
           <div class="dz-icon">${icon('upload')}</div>
           <div><b>Arraste os arquivos aqui</b> ou clique para escolher</div>
-          <div class="muted">PDF de fatura (Bradescard, Itaú, Nubank…) ou prints (PNG/JPG). Vários de uma vez — repetidos entre prints são removidos.</div>
+          <div class="muted">PDF de fatura (Bradescard, Itaú, Nubank…), prints (PNG/JPG) ou planilha (XLSX/CSV — extrato exportado do banco ou sua própria planilha). Vários de uma vez — repetidos são removidos.</div>
         </label>
         <div class="alert info mt" style="margin-bottom:0">${icon('lock')}<div>Os arquivos são lidos <b>somente no seu navegador</b> — nada é enviado para a internet. Dados como nome, CPF e endereço presentes no PDF são ignorados e não são gravados.</div></div>
         ${imp.busy ? `<div class="mt"><div class="cell-sub" id="impProg">${esc(imp.progress)}</div><div class="progress"><span id="impBar" style="width:5%"></span></div></div>` : ''}
@@ -742,7 +742,11 @@
       ${hasItems ? reviewHTML() : ''}`;
   }
 
-  function firstMonthFor(it) { return imp.account === 'conta' ? (it.date || '').slice(0, 7) || imp.invoiceMonth : ym.add(imp.invoiceMonth, -(it.n - 1)); }
+  function firstMonthFor(it) {
+    if (imp.account === 'conta') return (it.date || '').slice(0, 7) || imp.invoiceMonth;
+    if (imp.monthMode === 'date' && it.date) return firstInvoiceMonth(imp.account, it.date);
+    return ym.add(imp.invoiceMonth, -(it.n - 1));
+  }
   function isDuplicate(it) {
     const fm = firstMonthFor(it);
     return S().transactions.some((t) => t.account === imp.account && Math.abs(t.amount - it.amount) < 0.01 && t.installments === it.of && t.firstMonth === fm);
@@ -757,10 +761,13 @@
         <div class="panel-head"><h2>Conferência</h2><span class="sub">${imp.items.length} lançamentos encontrados — revise antes de importar</span></div>
         <div class="form-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
           <div class="field"><label>Cartão / conta</label><select id="impAcc"><option value="">— escolha —</option>${accountOptions(imp.account)}<option value="__new">+ Cadastrar novo cartão…</option></select></div>
-          <div class="field"><label>Fatura (mês de vencimento)</label><input type="month" id="impMonth" value="${imp.invoiceMonth}" /><span class="hint">Usado para calcular parcelas e o ano das datas. Alterar refaz a leitura.</span></div>
+          <div class="field"><label>Fatura (mês de vencimento)</label><input type="month" id="impMonth" value="${imp.invoiceMonth}" />
+            ${imp.account && imp.account !== 'conta' ? `<select id="impMode" style="margin-top:6px"><option value="invoice" ${imp.monthMode === 'invoice' ? 'selected' : ''}>Todos os lançamentos nesta fatura</option><option value="date" ${imp.monthMode === 'date' ? 'selected' : ''}>Calcular a fatura pela data de cada compra</option></select>` : ''}
+            <span class="hint">Usado para calcular parcelas e o ano das datas. Alterar refaz a leitura.</span></div>
           <div class="field">${imp.header.total ? `<label>Total detectado na fatura</label><div class="kpi-value" style="font-size:20px;margin:0">${fmt.money(imp.header.total)}</div>
             <label class="check"><input type="checkbox" id="impUseTotal" ${imp.useTotal ? 'checked' : ''}/> Registrar como valor oficial da fatura</label>` : ''}</div>
         </div>
+        ${imp.sheets.map(sheetMapHTML).join('')}
         ${dups ? `<div class="alert mt" style="margin-bottom:0">${icon('info')}<div><b>${dups} lançamento(s) já existem</b> neste cartão com o mesmo valor e parcelas — vieram desmarcados.</div></div>` : ''}
         <div class="table-wrap mt"><table class="review">
           <thead><tr><th><input type="checkbox" id="impAll" ${sel.length === imp.items.length ? 'checked' : ''} aria-label="Selecionar todos"/></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Parcela</th><th class="r">Valor da parcela</th><th>Situação</th></tr></thead>
@@ -771,17 +778,46 @@
             <td><select data-i="${i}" data-f="category">${catOptions(it.category)}</select></td>
             <td><div class="parc"><input type="number" min="1" max="72" data-i="${i}" data-f="n" value="${it.n}" /><span>de</span><input type="number" min="1" max="72" data-i="${i}" data-f="of" value="${it.of}" /></div></td>
             <td class="r"><input type="number" step="0.01" data-i="${i}" data-f="amount" value="${it.amount}" class="r" /></td>
-            <td>${it.dup ? '<span class="badge warn">já existe</span>' : '<span class="badge good">novo</span>'}</td>
+            <td>${it.dup ? '<span class="badge warn">já existe</span>' : it.income ? '<span class="badge" title="Entradas não são gastos — a renda é informada em Configurações">entrada</span>' : '<span class="badge good">novo</span>'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
         <div class="toolbar mt" style="margin-bottom:0">
           <span><b>${sel.length}</b> selecionados · ${fmt.money(sum)}${imp.header.total ? ` <span class="muted">(fatura: ${fmt.money(imp.header.total)})</span>` : ''}</span>
           <span style="flex:1"></span>
-          <details class="raw"><summary>Ver texto lido</summary><pre>${esc(imp.texts.join('\n\n———\n\n')).slice(0, 20000)}</pre></details>
+          ${imp.texts.length ? '' : '<!--'}<details class="raw"><summary>Ver texto lido</summary><pre>${esc(imp.texts.join('\n\n———\n\n')).slice(0, 20000)}</pre></details>${imp.texts.length ? '' : '-->'}
           <button class="btn" id="impCancel">Descartar</button>
           <button class="btn btn-primary" id="impGo" ${sel.length && imp.account ? '' : 'disabled'}>${icon('check')}Importar ${sel.length} lançamentos</button>
         </div>
       </div>`;
+  }
+
+  function sheetMapHTML(sh, k) {
+    const rows = sh.sheets[sh.sel].rows, m = sh.map;
+    const cols = Parsers.sheetColumns(rows, m);
+    const sel = (field, label, optional) => `<div class="field"><label>${label}</label><select data-sh="${k}" data-map="${field}">
+      ${optional ? '<option value="-1">— nenhuma —</option>' : ''}${cols.map((c) => `<option value="${c.i}" ${m[field] === c.i ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></div>`;
+    const prev = rows.slice(m.headerRow + 1, m.headerRow + 4);
+    return `<div class="sheet-map mt">
+      <div class="panel-head" style="margin-bottom:10px">${icon('list')}<h3>${esc(sh.file)}</h3>
+        ${sh.sheets.length > 1 ? `<select data-sh="${k}" data-sheet style="width:auto">${sh.sheets.map((x, i) => `<option value="${i}" ${i === sh.sel ? 'selected' : ''}>Aba: ${esc(x.name)}</option>`).join('')}</select>` : ''}
+        <span class="sub">${m.headerRow >= 0 ? 'cabeçalho na linha ' + (m.headerRow + 1) : 'sem cabeçalho'} · confira as colunas</span></div>
+      <div class="map-grid">
+        ${sel('date', 'Data', true)}${sel('desc', 'Descrição', true)}${sel('amount', 'Valor', false)}${sel('parcela', 'Parcela (ex.: 2/10)', true)}${sel('category', 'Categoria', true)}
+        <div class="field"><label>Os gastos aparecem como</label><select data-sh="${k}" data-neg><option value="0" ${sh.neg ? '' : 'selected'}>Valores positivos</option><option value="1" ${sh.neg ? 'selected' : ''}>Valores negativos</option></select></div>
+      </div>
+      ${prev.length ? `<div class="cell-sub" style="margin-top:8px">Primeiras linhas: ${prev.map((r) => esc((r || []).filter((c) => c != null && c !== '').map((c) => c instanceof Date ? c.toISOString().slice(0, 10) : String(c)).join(' · ').slice(0, 120))).join(' &nbsp;|&nbsp; ')}</div>` : ''}
+    </div>`;
+  }
+
+  /** Converte o rótulo de categoria da planilha na categoria do sistema. */
+  function catFromLabel(label, desc, amount) {
+    const n = (x) => (x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const l = n(label);
+    if (l) {
+      const hit = Object.entries(CATS).find(([k, v]) => n(v.name) === l || k === l || n(v.name).startsWith(l) || l.startsWith(n(v.name).split(' ')[0]));
+      if (hit) return hit[0];
+    }
+    return Parsers.guessCategory(desc, amount);
   }
 
   function reparse() {
@@ -793,25 +829,42 @@
       if (r.invoiceMonth && !header.invoiceMonth) header.invoiceMonth = r.invoiceMonth;
       all.push(...r.items);
     });
+    imp.sheets.forEach((sh) => {
+      all.push(...Parsers.sheetToItems(sh.sheets[sh.sel].rows, sh.map, { invoiceMonth: imp.invoiceMonth, negativeIsExpense: sh.neg }));
+    });
     imp.header = header;
     if (!imp.invoiceMonth) {
       imp.invoiceMonth = header.invoiceMonth || ui.month;
       if (!header.invoiceMonth) return reparse(); // refaz com o mês para acertar os anos
     }
-    imp.items = Parsers.dedupe(all).map((it) => ({ ...it, category: Parsers.guessCategory(it.desc, it.amount), on: true }));
+    imp.items = Parsers.dedupe(all).map((it) => ({ ...it, category: catFromLabel(it.catLabel, it.desc, it.amount), on: true }));
     markDups();
   }
-  function markDups() { imp.items.forEach((it) => { it.dup = !!imp.account && isDuplicate(it); if (it.dup) it.on = false; }); }
+  function markDups() {
+    imp.items.forEach((it) => {
+      it.dup = !!imp.account && isDuplicate(it);
+      it.income = imp.account === 'conta' && it.amount < 0; // entrada (salário, Pix recebido) não é gasto
+      if (it.dup || it.income) it.on = false;
+    });
+  }
 
   async function handleFiles(files) {
     if (!files.length) return;
-    imp.busy = true; imp.texts = []; imp.items = []; imp.header = {}; imp.invoiceMonth = ''; imp.files = files.map((f) => f.name);
+    imp.busy = true; imp.texts = []; imp.sheets = []; imp.items = []; imp.header = {}; imp.invoiceMonth = ''; imp.monthMode = 'invoice'; imp.files = files.map((f) => f.name);
     const setProg = (msg, frac) => { imp.progress = msg; const p = $('#impProg'), b = $('#impBar'); if (p) p.textContent = msg; if (b && frac != null) b.style.width = Math.max(5, frac * 100) + '%'; };
     render();
     try {
       for (let i = 0; i < files.length; i++) {
         const f = files[i], label = `(${i + 1}/${files.length}) ${f.name}`;
-        if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
+        if (/\.(xlsx|xls|csv)$/i.test(f.name) || /spreadsheet|csv|excel/.test(f.type)) {
+          setProg('Lendo planilha ' + label, i / files.length);
+          const sheets = await Importer.readSpreadsheet(f);
+          // escolhe a aba com mais linhas de valor reconhecidas
+          let bestI = 0, bestN = -1;
+          sheets.forEach((sh, si) => { const mp = Parsers.detectSheetMapping(sh.rows); const n = Parsers.sheetToItems(sh.rows, mp, {}).length; if (n > bestN) { bestN = n; bestI = si; } });
+          const map = Parsers.detectSheetMapping(sheets[bestI].rows);
+          imp.sheets.push({ file: f.name, sheets, sel: bestI, map, neg: Parsers.negativesAreExpenses(sheets[bestI].rows, map) });
+        } else if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
           setProg('Lendo PDF ' + label, i / files.length);
           imp.texts.push(await Importer.pdfToText(f, askPdfPassword));
         } else if (f.type.startsWith('image/')) {
@@ -820,12 +873,18 @@
         }
       }
       await Importer.releaseOcr();
-      imp.account = Importer.detectCard(imp.texts.join('\n'), S().cards) || '';
+      const sheetText = imp.sheets.map((sh) => sh.sheets[sh.sel].rows.slice(0, 12).map((r) => (r || []).join(' ')).join('\n')).join('\n');
+      imp.account = Importer.detectCard([...imp.texts, sheetText, ...imp.files].join('\n'), S().cards) || '';
       reparse();
+      // planilha com compras de vários meses: calcula a fatura pela data de cada compra
+      if (imp.sheets.length && !imp.texts.length) {
+        const ds = imp.items.map((i) => i.date).filter(Boolean).sort();
+        if (ds.length && ym.diff(ds[0].slice(0, 7), ds[ds.length - 1].slice(0, 7)) >= 1) { imp.monthMode = 'date'; markDups(); }
+      }
       imp.busy = false;
       render();
       toast(imp.items.length ? `${imp.items.length} lançamentos encontrados` : 'Nenhum lançamento reconhecido');
-      if (!imp.items.length) alert('Não encontrei lançamentos nesses arquivos. Confira em "Ver texto lido" se o texto foi reconhecido; prints nítidos e sem cortes funcionam melhor.');
+      if (!imp.items.length && !imp.sheets.length) alert('Não encontrei lançamentos nesses arquivos. Confira em "Ver texto lido" se o texto foi reconhecido; prints nítidos e sem cortes funcionam melhor.');
     } catch (e) {
       imp.busy = false; render();
       alert('Não foi possível ler os arquivos: ' + (e && e.message ? e.message : e));
@@ -849,7 +908,14 @@
     ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
     ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove('over')));
     drop.addEventListener('drop', (e) => { e.preventDefault(); handleFiles([...e.dataTransfer.files]); });
-    if (!imp.items.length) return;
+    $('#impTpl').addEventListener('click', (e) => { e.preventDefault(); Importer.downloadTemplate(); });
+    if (!imp.items.length && !imp.sheets.length) return;
+    $$('[data-map]').forEach((sl) => sl.addEventListener('change', () => { const sh = imp.sheets[+sl.dataset.sh]; sh.map[sl.dataset.map] = +sl.value; reparse(); render(); }));
+    $$('[data-neg]').forEach((sl) => sl.addEventListener('change', () => { imp.sheets[+sl.dataset.sh].neg = sl.value === '1'; reparse(); render(); }));
+    $$('[data-sheet]').forEach((sl) => sl.addEventListener('change', () => {
+      const sh = imp.sheets[+sl.dataset.sh]; sh.sel = +sl.value; sh.map = Parsers.detectSheetMapping(sh.sheets[sh.sel].rows); sh.neg = Parsers.negativesAreExpenses(sh.sheets[sh.sel].rows, sh.map); reparse(); render();
+    }));
+    const mode = $('#impMode'); if (mode) mode.addEventListener('change', () => { imp.monthMode = mode.value; imp.items.forEach((it) => { it.on = true; }); markDups(); render(); });
 
     $('#impAcc').addEventListener('change', (e) => {
       if (e.target.value === '__new') { e.target.value = imp.account; cardForm(null, (id) => { imp.account = id; markDups(); render(); }); return; }
@@ -866,16 +932,16 @@
       if (f === 'n' || f === 'of' || f === 'amount') { it.dup = !!imp.account && isDuplicate(it); }
       render();
     }));
-    $('#impCancel').addEventListener('click', () => { imp.items = []; imp.texts = []; render(); });
+    $('#impCancel').addEventListener('click', () => { imp.items = []; imp.texts = []; imp.sheets = []; render(); });
     $('#impGo').addEventListener('click', () => {
       const sel = imp.items.filter((i) => i.on);
       sel.forEach((it) => S().transactions.push({
         id: Core.uid(), account: imp.account, date: it.date, desc: it.desc.trim(), category: it.category,
         amount: Math.round(it.amount * 100) / 100, installments: Math.max(1, it.of), firstMonth: firstMonthFor(it), note: ''
       }));
-      if (imp.useTotal && imp.header.total && imp.account !== 'conta') S().invoiceOverrides[imp.account + '|' + imp.invoiceMonth] = imp.header.total;
+      if (imp.useTotal && imp.header.total && imp.account !== 'conta' && imp.monthMode === 'invoice') S().invoiceOverrides[imp.account + '|' + imp.invoiceMonth] = imp.header.total;
       const n = sel.length, acc = imp.account, mm = imp.invoiceMonth;
-      imp.items = []; imp.texts = [];
+      imp.items = []; imp.texts = []; imp.sheets = [];
       commit(`${n} lançamentos importados`);
       if (acc !== 'conta') { ui.cardSel = acc; ui.cardMonth = mm; location.hash = '#/cartoes'; }
     });

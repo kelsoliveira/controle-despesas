@@ -15,7 +15,7 @@ O site começa **vazio** — não contém dados pessoais.
 - **Cartões e faturas** — faturas mês a mês por cartão, itens com “parcela X de Y”, valor oficial da fatura e uso do limite.
 - **Parcelamentos** — todas as compras parceladas com andamento, saldo restante e mês da última parcela.
 - **Despesas fixas** — água, luz, gás, internet, celular, aluguel etc., com vencimento e vigência.
-- **Importar faturas** — lê o **PDF da fatura** ou **prints do app do banco** (OCR em português), detecta cartão, vencimento, total e parcelas, remove repetidos entre prints e marca o que já existe. Tudo é conferido numa tabela editável antes de gravar.
+- **Importar faturas** — lê o **PDF da fatura**, **prints do app do banco** (OCR em português) ou **planilhas XLSX/CSV** (com detecção automática de colunas e modelo para download), detecta cartão, vencimento, total e parcelas, remove repetidos entre prints e marca o que já existe. Tudo é conferido numa tabela editável antes de gravar.
 - **Lançamentos** — cadastro de gastos no cartão ou débito/Pix; a fatura da 1ª parcela é calculada pelo dia de fechamento.
 - **Configurações** — renda, % de reserva, tema claro/escuro, cartões, backup (exportar/importar JSON).
 

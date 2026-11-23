@@ -128,6 +128,168 @@
     return 'outros';
   }
 
-  const api = { parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
+  // ======================== Planilhas (XLSX / CSV) ========================
+  const HDR = {
+    date: /^(data|dt|dia|date)\b|data\s+d[ae]\s+(compra|lan)/i,
+    desc: /descri|estabelec|hist[oó]rico|lan[cç]amento|loja|^item|nome|detalhe|merchant|t[ií]tulo/i,
+    amount: /valor|r\$|montante|amount|pre[cç]o|quantia|d[eé]bito/i,
+    parcela: /parcela|^parc\b|presta[cç]/i,
+    category: /categoria|classifica|^tipo\b/i
+  };
+  const isDateObj = (v) => v instanceof Date && !isNaN(v);
+
+  /** Converte o conteúdo de uma célula em data ISO (AAAA-MM-DD) ou ''. */
+  function cellToDate(v, invoiceMonth) {
+    if (v == null || v === '') return '';
+    if (isDateObj(v)) return `${v.getUTCFullYear()}-${pad(v.getUTCMonth() + 1)}-${pad(v.getUTCDate())}`;
+    if (typeof v === 'number') {
+      if (v < 20000 || v > 80000) return ''; // nº de série do Excel plausível
+      const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000);
+      return cellToDate(d);
+    }
+    const s = String(v).trim();
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = s.match(/^(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?$/);
+    if (m) {
+      const d = +m[1], mo = +m[2];
+      if (d < 1 || d > 31 || mo < 1 || mo > 12) return '';
+      if (!m[3]) return inferYear(d, mo, invoiceMonth, 1);
+      const y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+      return `${y}-${pad(mo)}-${pad(d)}`;
+    }
+    m = s.match(/^(\d{1,2})\s*de\s*([a-zç]{3})[a-zç]*\.?(?:\s*de\s*(\d{4}))?$/i);
+    if (m && MONTHS[m[2].toLowerCase()]) return m[3] ? `${m[3]}-${pad(MONTHS[m[2].toLowerCase()])}-${pad(+m[1])}` : inferYear(+m[1], MONTHS[m[2].toLowerCase()], invoiceMonth, 1);
+    return '';
+  }
+
+  /** Converte "R$ 1.234,56", "-1234.5", "(10,00)", "10,00-" etc. em número (ou NaN). */
+  function cellToNumber(v) {
+    if (typeof v === 'number') return v;
+    if (v == null) return NaN;
+    let s = String(v).trim();
+    if (!s) return NaN;
+    let neg = false;
+    if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+    if (/-\s*$/.test(s)) { neg = true; s = s.replace(/-\s*$/, ''); }
+    s = s.replace(/R\s?\$|BRL|\s/gi, '');
+    if (s.startsWith('-')) { neg = !neg; s = s.slice(1); }
+    if (s.startsWith('+')) s = s.slice(1);
+    if (!/^[\d.,]+$/.test(s)) return NaN;
+    const lc = s.lastIndexOf(','), ld = s.lastIndexOf('.');
+    if (lc >= 0 && ld >= 0) s = lc > ld ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+    else if (lc >= 0) s = s.replace(/\./g, '').replace(',', '.');
+    else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+    const n = parseFloat(s);
+    return isNaN(n) ? NaN : (neg ? -n : n);
+  }
+
+  /** "2/10", "02 de 10", "Parcela 2 de 10" → {n, of}. */
+  function cellToParcela(v) {
+    const m = String(v ?? '').match(/(\d{1,2})\s*(?:\/|de)\s*(\d{1,2})/i);
+    if (m && +m[2] >= +m[1] && +m[2] > 1 && +m[2] <= 72 && +m[1] >= 1) return { n: +m[1], of: +m[2] };
+    return null;
+  }
+  const colName = (i) => { let s = ''; i++; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; };
+
+  /** Descobre a linha de cabeçalho e quais colunas são data, descrição, valor… */
+  function detectSheetMapping(rows) {
+    const map = { headerRow: -1, date: -1, desc: -1, amount: -1, parcela: -1, category: -1 };
+    let best = 0;
+    for (let r = 0; r < Math.min(rows.length, 30); r++) {
+      const row = rows[r] || [];
+      const found = {};
+      // cabeçalho só tem textos curtos — linhas com datas ou números são dados
+      if (row.some((c) => isDateObj(c) || typeof c === 'number' || (typeof c === 'string' && (cellToDate(c, '2000-01') || /^-?[\d.,]+$/.test(c.trim()))))) continue;
+      row.forEach((c, i) => {
+        const t = String(c ?? '').trim();
+        if (!t || t.length > 40) return;
+        if (/valor/i.test(t)) { if (found.amount == null || (/total/i.test(found.amountTxt) && !/total/i.test(t))) { found.amount = i; found.amountTxt = t; } return; }
+        for (const k of ['date', 'parcela', 'category', 'desc', 'amount']) {
+          if (found[k] == null && HDR[k].test(t)) { found[k] = i; if (k === 'amount') found.amountTxt = t; return; }
+        }
+      });
+      const score = ['date', 'desc', 'amount', 'parcela', 'category'].filter((k) => found[k] != null).length;
+      if (score > best && score >= 2 && found.amount != null) { best = score; Object.assign(map, { headerRow: r, date: found.date ?? -1, desc: found.desc ?? -1, amount: found.amount, parcela: found.parcela ?? -1, category: found.category ?? -1 }); }
+    }
+    // completa pelo conteúdo o que o cabeçalho não indicou
+    const body = rows.slice(map.headerRow + 1, map.headerRow + 200);
+    const ncols = Math.max(0, ...body.map((r) => (r || []).length));
+    const stats = Array.from({ length: ncols }, (_, i) => {
+      let dates = 0, nums = 0, texts = 0, len = 0;
+      body.forEach((r) => {
+        const v = (r || [])[i];
+        if (v == null || v === '') return;
+        if (isDateObj(v) || (typeof v === 'string' && cellToDate(v, '2000-01'))) dates++;
+        else if (!isNaN(cellToNumber(v))) nums++;
+        else { texts++; len += String(v).length; }
+      });
+      return { i, dates, nums, texts, avg: texts ? len / texts : 0 };
+    });
+    const used = () => [map.date, map.desc, map.amount, map.parcela, map.category];
+    const pick = (fn, key) => stats.filter((s) => !used().includes(s.i)).sort((a, b) => fn(b) - fn(a))[0];
+    if (map.date < 0) { const s = pick((s) => s.dates); if (s && s.dates) map.date = s.i; }
+    if (map.amount < 0) { const s = pick((s) => s.nums); if (s && s.nums) map.amount = s.i; }
+    if (map.desc < 0) { const s = pick((s) => s.texts * 10 + s.avg); if (s && s.texts) map.desc = s.i; }
+    return map;
+  }
+
+  /** Lista as colunas para os seletores de mapeamento. */
+  function sheetColumns(rows, map) {
+    const head = map.headerRow >= 0 ? rows[map.headerRow] || [] : [];
+    const n = Math.max(0, ...rows.slice(0, 60).map((r) => (r || []).length));
+    return Array.from({ length: n }, (_, i) => ({ i, label: colName(i) + (head[i] != null && head[i] !== '' ? ' — ' + String(head[i]).slice(0, 30) : '') }));
+  }
+
+  /** A maioria dos valores é negativa? (extratos costumam trazer gastos negativos) */
+  function negativesAreExpenses(rows, map) {
+    let neg = 0, pos = 0;
+    rows.slice(map.headerRow + 1).forEach((r) => { const v = cellToNumber((r || [])[map.amount]); if (v < 0) neg++; else if (v > 0) pos++; });
+    return neg > pos;
+  }
+
+  /** Converte as linhas da planilha em lançamentos. */
+  function sheetToItems(rows, map, opts = {}) {
+    const items = [];
+    if (map.amount < 0) return items;
+    for (let r = map.headerRow + 1; r < rows.length; r++) {
+      const row = rows[r] || [];
+      let amount = cellToNumber(row[map.amount]);
+      if (isNaN(amount) || amount === 0) continue;
+      let desc = map.desc >= 0 ? String(row[map.desc] ?? '').replace(/\s+/g, ' ').trim() : '';
+      if (!desc) desc = 'Lançamento da planilha';
+      if (SKIP.test(desc) || /^(total|subtotal|saldo)\b/i.test(desc)) continue;
+      if (opts.negativeIsExpense) amount = -amount;
+      let p = map.parcela >= 0 ? cellToParcela(row[map.parcela]) : null;
+      if (!p) {
+        const m = desc.match(/(?:parc(?:ela)?\.?\s*)?\(?\b(\d{1,2})\s?\/\s?(\d{1,2})\)?\s*$/i);
+        if (m) { p = cellToParcela(m[1] + '/' + m[2]); if (p) desc = desc.slice(0, m.index).trim() || desc; }
+      }
+      const n = p ? p.n : 1, of = p ? p.of : 1;
+      const date = map.date >= 0 ? cellToDate(row[map.date], opts.invoiceMonth) : '';
+      items.push({ date, desc: tidy(desc), amount: Math.round(amount * 100) / 100, n, of, catLabel: map.category >= 0 ? String(row[map.category] ?? '').trim() : '' });
+    }
+    return items;
+  }
+
+  /** Lê CSV (separador ; , ou tab) — retorna matriz de células. */
+  function parseCSV(text) {
+    text = text.replace(/^﻿/, '');
+    const sample = text.split(/\r?\n/).slice(0, 10).join('\n');
+    const delim = [';', '\t', ','].map((d) => [d, (sample.match(new RegExp(d === '\t' ? '\t' : '\\' + d, 'g')) || []).length]).sort((a, b) => b[1] - a[1])[0][0];
+    const rows = []; let row = [], cell = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === delim) { row.push(cell); cell = ''; }
+      else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter((r) => r.some((c) => String(c).trim() !== ''));
+  }
+
+  const api = { cellToDate, cellToNumber, cellToParcela, detectSheetMapping, sheetColumns, negativesAreExpenses, sheetToItems, parseCSV, parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
   if (typeof module !== 'undefined') module.exports = api; else root.Parsers = api;
 })(typeof window !== 'undefined' ? window : globalThis);
