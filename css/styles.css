@@ -309,6 +309,9 @@ code { font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--
 @media (max-width: 1180px) { .map-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 600px) { .map-grid { grid-template-columns: 1fr 1fr; } }
 
+.dup-group { border: 1px solid var(--border); border-radius: 12px; padding: 4px 14px 10px; margin-bottom: 10px; background: var(--surface-2); }
+.dup-group .list-item { gap: 8px; }
+
 /* ===================== Responsivo ===================== */
 @media (max-width: 1180px) {
   .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }

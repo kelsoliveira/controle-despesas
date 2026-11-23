@@ -494,7 +494,19 @@
     else rows = list.map((t) => ({ t, it: null }));
     rows.sort((a, b) => (b.t.date || '').localeCompare(a.t.date || ''));
     const sum = rows.reduce((a, x) => a + (x.it ? x.it.amount : x.t.amount * x.t.installments), 0);
+    const groups = duplicateGroups();
     return `
+      ${groups.length ? `<div class="panel" style="margin-bottom:20px;border-color:color-mix(in srgb, var(--warn) 45%, var(--border))">
+        <div class="panel-head">${icon('alert')}<h2>Possíveis lançamentos duplicados</h2><span class="sub">${groups.length} grupo(s) — mesmo cartão, mesmo valor e datas próximas</span></div>
+        ${groups.map((g, gi) => `<div class="dup-group">
+          ${g.map((t) => `<div class="list-item">
+            <div class="grow"><div class="cell-title">${esc(t.desc)}</div><div class="cell-sub">${fmt.date(t.date) || 'sem data'} · ${esc(Core.accountName(t.account))} · ${t.installments > 1 ? t.installments + 'x de ' : ''}${fmt.money(t.amount)} · 1ª parcela na fatura ${t.firstMonth ? fmt.month(t.firstMonth) : '—'}</div></div>
+            <button class="btn btn-sm" data-edit-tx="${t.id}">${icon('edit')}Editar</button>
+            <button class="btn btn-sm btn-danger" data-dupdel="${t.id}">${icon('trash')}Excluir este</button>
+          </div>`).join('')}
+          <div style="text-align:right"><button class="btn btn-sm btn-ghost" data-dupok="${gi}">Não são duplicados</button></div>
+        </div>`).join('')}
+      </div>` : ''}
       <div class="panel">
         <div class="toolbar">
           <input type="text" id="tq" placeholder="Buscar descrição…" value="${esc(f.q)}" />
@@ -523,6 +535,15 @@
     q.addEventListener('input', () => { ui.txFilter.q = q.value; const pos = q.selectionStart; render(); const n = $('#tq'); n.focus(); n.setSelectionRange(pos, pos); });
     $('#tAcc').addEventListener('change', (e) => { ui.txFilter.account = e.target.value; render(); });
     $$('#tScope button').forEach((b) => b.addEventListener('click', () => { ui.txFilter.scope = b.dataset.s; render(); }));
+    $$('[data-dupdel]').forEach((b) => b.addEventListener('click', () => {
+      const t = S().transactions.find((x) => x.id === b.dataset.dupdel);
+      if (confirm(`Excluir “${t.desc}” (${t.installments}x de ${fmt.money(t.amount)})?`)) { S().transactions = S().transactions.filter((x) => x !== t); commit('Duplicado excluído'); }
+    }));
+    $$('[data-dupok]').forEach((b) => b.addEventListener('click', () => {
+      const g = duplicateGroups()[+b.dataset.dupok]; S().dupIgnore = S().dupIgnore || {};
+      for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) S().dupIgnore[[g[i].id, g[j].id].sort().join('|')] = true;
+      commit('Marcado como não duplicado');
+    }));
     bindTxActions();
   }
   function bindTxActions() {
@@ -747,9 +768,29 @@
     if (imp.monthMode === 'date' && it.date) return firstInvoiceMonth(imp.account, it.date);
     return ym.add(imp.invoiceMonth, -(it.n - 1));
   }
-  function isDuplicate(it) {
-    const fm = firstMonthFor(it);
-    return S().transactions.some((t) => t.account === imp.account && Math.abs(t.amount - it.amount) < 0.01 && t.installments === it.of && t.firstMonth === fm);
+  /** Mesmo valor e (mesma compra pela data ±3 dias OU mesmo parcelamento na mesma fatura). */
+  function sameTx(a, b) {
+    if (a.account !== b.account || Math.abs(a.amount - b.amount) >= 0.01) return false;
+    if (a.date && b.date) return Math.abs(new Date(a.date) - new Date(b.date)) <= 3 * 86400000;
+    return a.installments === b.installments && a.firstMonth === b.firstMonth;
+  }
+  function findExisting(it) {
+    const cand = { account: imp.account, amount: it.amount, date: it.date, installments: it.of, firstMonth: firstMonthFor(it) };
+    return S().transactions.find((t) => sameTx(t, cand) || (t.account === cand.account && Math.abs(t.amount - cand.amount) < 0.01 && t.installments === cand.installments && t.firstMonth === cand.firstMonth));
+  }
+  function isDuplicate(it) { it.dupOf = findExisting(it) || null; return !!it.dupOf; }
+  const aliasKey = (raw) => String(raw || '').toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '');
+
+  /** Grupos de lançamentos gravados que parecem repetidos. */
+  function duplicateGroups() {
+    const tx = S().transactions, ign = S().dupIgnore || {}, seen = new Set(), groups = [];
+    tx.forEach((a, i) => {
+      if (seen.has(a.id)) return;
+      const g = [a];
+      for (let j = i + 1; j < tx.length; j++) { const b = tx[j]; if (!seen.has(b.id) && sameTx(a, b) && !ign[[a.id, b.id].sort().join('|')]) g.push(b); }
+      if (g.length > 1) { g.forEach((x) => seen.add(x.id)); groups.push(g); }
+    });
+    return groups;
   }
 
   function reviewHTML() {
@@ -767,6 +808,9 @@
           <div class="field">${imp.header.total ? `<label>Total detectado na fatura</label><div class="kpi-value" style="font-size:20px;margin:0">${fmt.money(imp.header.total)}</div>
             <label class="check"><input type="checkbox" id="impUseTotal" ${imp.useTotal ? 'checked' : ''}/> Registrar como valor oficial da fatura</label>` : ''}</div>
         </div>
+        ${imp.fromPrints ? `<div class="alert mt" style="margin-bottom:0">${icon('alert')}<div>
+          <b>Prints não mostram qual mês está selecionado no app.</b> Ajuste o campo “Fatura” para o mês da aba destacada no app do banco (ex.: “Jan 27”) — ele define as parcelas e evita lançamentos duplicados. Itens cortados no topo/rodapé do print podem vir sem data ou sem o nº de parcelas: confira.
+          <label class="check" style="margin-top:8px;display:flex"><input type="checkbox" id="impMonthOk" ${imp.monthOk ? 'checked' : ''}/> Confirmo que estes prints são da fatura de <b>&nbsp;${fmt.monthLong(imp.invoiceMonth)}</b></label></div></div>` : ''}
         ${imp.sheets.map(sheetMapHTML).join('')}
         ${dups ? `<div class="alert mt" style="margin-bottom:0">${icon('info')}<div><b>${dups} lançamento(s) já existem</b> neste cartão com o mesmo valor e parcelas — vieram desmarcados.</div></div>` : ''}
         <div class="table-wrap mt"><table class="review">
@@ -778,7 +822,7 @@
             <td><select data-i="${i}" data-f="category">${catOptions(it.category)}</select></td>
             <td><div class="parc"><input type="number" min="1" max="72" data-i="${i}" data-f="n" value="${it.n}" /><span>de</span><input type="number" min="1" max="72" data-i="${i}" data-f="of" value="${it.of}" /></div></td>
             <td class="r"><input type="number" step="0.01" data-i="${i}" data-f="amount" value="${it.amount}" class="r" /></td>
-            <td>${it.dup ? '<span class="badge warn">já existe</span>' : it.income ? '<span class="badge" title="Entradas não são gastos — a renda é informada em Configurações">entrada</span>' : '<span class="badge good">novo</span>'}</td>
+            <td>${it.dup ? `<span class="badge warn" title="${esc((it.dupOf ? it.dupOf.desc + ' · ' + fmt.date(it.dupOf.date) + ' · ' + it.dupOf.installments + 'x' : ''))}">já existe${it.dupOf ? ': ' + esc(it.dupOf.desc.slice(0, 22)) : ''}</span>` : it.income ? '<span class="badge" title="Entradas não são gastos — a renda é informada em Configurações">entrada</span>' : '<span class="badge good">novo</span>'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
         <div class="toolbar mt" style="margin-bottom:0">
@@ -786,7 +830,7 @@
           <span style="flex:1"></span>
           ${imp.texts.length ? '' : '<!--'}<details class="raw"><summary>Ver texto lido</summary><pre>${esc(imp.texts.join('\n\n———\n\n')).slice(0, 20000)}</pre></details>${imp.texts.length ? '' : '-->'}
           <button class="btn" id="impCancel">Descartar</button>
-          <button class="btn btn-primary" id="impGo" ${sel.length && imp.account ? '' : 'disabled'}>${icon('check')}Importar ${sel.length} lançamentos</button>
+          <button class="btn btn-primary" id="impGo" ${sel.length && imp.account && (!imp.fromPrints || imp.monthOk) ? '' : 'disabled'} title="${imp.fromPrints && !imp.monthOk ? 'Confirme o mês da fatura dos prints' : ''}">${icon('check')}Importar ${sel.length} lançamentos</button>
         </div>
       </div>`;
   }
@@ -837,7 +881,12 @@
       imp.invoiceMonth = header.invoiceMonth || ui.month;
       if (!header.invoiceMonth) return reparse(); // refaz com o mês para acertar os anos
     }
-    imp.items = Parsers.dedupe(all).map((it) => ({ ...it, category: catFromLabel(it.catLabel, it.desc, it.amount), on: true }));
+    const aliases = S().aliases || {};
+    imp.items = Parsers.dedupe(all).map((it) => {
+      const al = aliases[aliasKey(it.raw)];
+      const desc = al ? al.desc : it.desc;
+      return { ...it, desc, auto: desc, category: al && al.category ? al.category : catFromLabel(it.catLabel, desc, it.amount), on: true };
+    });
     markDups();
   }
   function markDups() {
@@ -850,7 +899,7 @@
 
   async function handleFiles(files) {
     if (!files.length) return;
-    imp.busy = true; imp.texts = []; imp.sheets = []; imp.items = []; imp.header = {}; imp.invoiceMonth = ''; imp.monthMode = 'invoice'; imp.files = files.map((f) => f.name);
+    imp.busy = true; imp.fromPrints = false; imp.monthOk = false; imp.texts = []; imp.sheets = []; imp.items = []; imp.header = {}; imp.invoiceMonth = ''; imp.monthMode = 'invoice'; imp.files = files.map((f) => f.name);
     const setProg = (msg, frac) => { imp.progress = msg; const p = $('#impProg'), b = $('#impBar'); if (p) p.textContent = msg; if (b && frac != null) b.style.width = Math.max(5, frac * 100) + '%'; };
     render();
     try {
@@ -868,6 +917,7 @@
           setProg('Lendo PDF ' + label, i / files.length);
           imp.texts.push(await Importer.pdfToText(f, askPdfPassword));
         } else if (f.type.startsWith('image/')) {
+          imp.fromPrints = true;
           setProg('Reconhecendo texto do print ' + label + ' — pode levar alguns segundos', i / files.length);
           imp.texts.push(await Importer.imageToText(f, (p) => setProg(`Reconhecendo texto ${label}: ${Math.round(p * 100)}%`, (i + p) / files.length)));
         }
@@ -915,13 +965,14 @@
     $$('[data-sheet]').forEach((sl) => sl.addEventListener('change', () => {
       const sh = imp.sheets[+sl.dataset.sh]; sh.sel = +sl.value; sh.map = Parsers.detectSheetMapping(sh.sheets[sh.sel].rows); sh.neg = Parsers.negativesAreExpenses(sh.sheets[sh.sel].rows, sh.map); reparse(); render();
     }));
+    const mok = $('#impMonthOk'); if (mok) mok.addEventListener('change', () => { imp.monthOk = mok.checked; render(); });
     const mode = $('#impMode'); if (mode) mode.addEventListener('change', () => { imp.monthMode = mode.value; imp.items.forEach((it) => { it.on = true; }); markDups(); render(); });
 
     $('#impAcc').addEventListener('change', (e) => {
       if (e.target.value === '__new') { e.target.value = imp.account; cardForm(null, (id) => { imp.account = id; markDups(); render(); }); return; }
       imp.account = e.target.value; imp.items.forEach((it) => { if (!it.dup) it.on = true; }); markDups(); render();
     });
-    $('#impMonth').addEventListener('change', (e) => { if (!e.target.value) return; imp.invoiceMonth = e.target.value; reparse(); render(); });
+    $('#impMonth').addEventListener('change', (e) => { if (!e.target.value) return; imp.invoiceMonth = e.target.value; imp.monthOk = false; reparse(); render(); });
     const ut = $('#impUseTotal'); if (ut) ut.addEventListener('change', () => { imp.useTotal = ut.checked; });
     $('#impAll').addEventListener('change', (e) => { imp.items.forEach((it) => (it.on = e.target.checked)); render(); });
     $$('.review [data-i]').forEach((inp) => inp.addEventListener('change', () => {
@@ -935,6 +986,12 @@
     $('#impCancel').addEventListener('click', () => { imp.items = []; imp.texts = []; imp.sheets = []; render(); });
     $('#impGo').addEventListener('click', () => {
       const sel = imp.items.filter((i) => i.on);
+      // lembra nomes e categorias corrigidos para as próximas importações
+      S().aliases = S().aliases || {};
+      imp.items.forEach((it) => {
+        const k = aliasKey(it.raw);
+        if (k && (it.desc.trim() !== it.auto || (S().aliases[k] && S().aliases[k].category !== it.category))) S().aliases[k] = { desc: it.desc.trim(), category: it.category };
+      });
       sel.forEach((it) => S().transactions.push({
         id: Core.uid(), account: imp.account, date: it.date, desc: it.desc.trim(), category: it.category,
         amount: Math.round(it.amount * 100) / 100, installments: Math.max(1, it.of), firstMonth: firstMonthFor(it), note: ''

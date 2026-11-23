@@ -18,6 +18,8 @@ window.SEED = {
   invoiceOverrides: {},
   invoicePaid: {},
   fixedPaid: {},
+  aliases: {},     // nomes corrigidos na importação: { chaveDoNomeOriginal: { desc, category } }
+  dupIgnore: {},   // pares marcados como "não são duplicados"
   // Modelos de despesas fixas — preencha os valores
   fixed: [
     { id: 'f1', name: 'Energia elétrica',     category: 'moradia',  amount: 0, dueDay: 10, start: '', end: '', estimated: true },

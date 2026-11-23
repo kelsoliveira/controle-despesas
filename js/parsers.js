@@ -52,7 +52,7 @@
       let n = 1, of = 1;
       if (pn && pof && +pof >= +pn && +pof > 1 && +pof <= 72) { n = +pn; of = +pof; }
       const amount = toNum(val) * (neg1 || neg2 ? -1 : 1);
-      items.push({ date: inferYear(+dd, +mm, invoiceMonth, n), desc: tidy(desc), amount, n, of });
+      items.push({ date: inferYear(+dd, +mm, invoiceMonth, n), desc: cleanMerchant(desc), raw: desc, amount, n, of });
     }
     return items;
   }
@@ -76,7 +76,7 @@
         if (!desc || META.test(desc)) desc = pendingDesc;
         if (!desc || SKIP.test(desc) || /fatura|total|limite|dispon/i.test(desc)) { pendingDesc = ''; continue; }
         const credit = a[1] === '+' || /reembolso|estorno/i.test(line);
-        last = { desc: tidy(desc), amount: toNum(a[2]) * (credit ? -1 : 1), n: 1, of: 1, date: curDate };
+        last = { desc: cleanMerchant(desc), raw: desc, amount: toNum(a[2]) * (credit ? -1 : 1), n: 1, of: 1, date: curDate };
         if (parc) { last.n = +parc[1]; last.of = +parc[2]; }
         items.push(last); pendingDesc = '';
         continue;
@@ -95,11 +95,65 @@
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
+  // ======================== Limpeza de nomes de estabelecimentos ========================
+  const CITIES = ['sao paulo', 'rio de janeiro', 'manaus', 'curitiba', 'guarulhos', 'cajamar', 'brasilia', 'belo horizonte', 'porto alegre',
+    'salvador', 'recife', 'fortaleza', 'florianopolis', 'barueri', 'osasco', 'campinas', 'goiania', 'belem', 'santo andre', 'sao bernardo do campo',
+    'sao bernardo', 'jundiai', 'extrema', 'louveira', 'embu das artes', 'embu', 'contagem', 'joinville', 'uberlandia', 'vitoria', 'natal', 'maceio',
+    'teresina', 'cuiaba', 'campo grande', 'palmas', 'porto velho', 'boa vista', 'macapa', 'rio branco', 'aracaju', 'joao pessoa', 'sao luis',
+    'ribeirao preto', 'sorocaba', 'santos', 'niteroi', 'cotia', 'itapevi', 'taboao da serra', 'diadema', 'mogi das cruzes', 'hortolandia',
+    'vinhedo', 'itajai', 'blumenau', 'londrina', 'maringa', 'sao jose dos campos', 'sao jose', 'canoas', 'betim', 'serra', 'vila velha', 'cariacica',
+    'duque de caxias', 'nova iguacu', 'sao goncalo', 'osasco', 'carapicuiba', 'santana de parnaiba', 'alphaville', 'paulinia', 'indaiatuba'];
+  const CITY_RE = CITIES.map((c) => c.replace(/ /g, '\\s*')).sort((a, b) => b.length - a.length).join('|');
+  const GATEWAYS = new Set(['ebn', 'pg', 'pag', 'pagseguro', 'pagbank', 'mp', 'mercadopago', 'pp', 'paypal', 'ec', 'dm', 'ifd', 'iz', 'sumup', 'stone', 'picpay', 'hna', 'ce', 'ton', 'cielo', 'getnet', 'zp', 'pay', 'ppro', 'pix', 'sympla']);
+  const BRANDS = [[/amazon\s*mktplc|amazon\s*marketplace|^amazon(\s*br)?$|amazonbr|amazon/, 'Amazon'], [/mercado\s*livre|mercadolivre|^mercado$/, 'Mercado Livre'],
+    [/shopee/, 'Shopee'], [/playstation|^psn/, 'PlayStation Store'], [/drogasil|droga\s*raia|^raia\b/, 'Raia Drogasil'], [/ifood/, 'iFood'],
+    [/^uber|uber\s*trip|ubereats/, 'Uber'], [/netflix/, 'Netflix'], [/spotify/, 'Spotify'], [/aliexpress/, 'AliExpress'], [/magalu|magazine\s*luiza/, 'Magalu'],
+    [/^99\s*(app|pop|tecnologia)/, '99'], [/google/, 'Google'], [/apple\.com|itunes/, 'Apple'], [/steam/, 'Steam'], [/nintendo/, 'Nintendo']];
+  const SUFFIX = /\s+(ltda|lt|me|sa|s\/a|eireli|epp|com|br|bra|[a-z])$/i;
+
+  function stripLocation(s) {
+    let prev;
+    do {
+      prev = s;
+      s = s.replace(/(\w{3,}?)(bra|br)$/i, (m, a) => (/^(sob|lib|cob|zeb)$/i.test(a) ? m : a)).trim(); // "paulobra" → "paulo"
+      s = s.replace(new RegExp('\\s*(' + CITY_RE + ')$', 'i'), (m) => (s.length - m.length >= 3 ? '' : m)).trim();
+      const last = s.match(/\s([a-z]{5,})$/i); // cidade truncada (ex.: "Florianop")
+      if (last && CITIES.some((c) => c.replace(/ /g, '').startsWith(last[1].toLowerCase()) && c.replace(/ /g, '') !== last[1].toLowerCase())) s = s.slice(0, last.index).trim();
+      s = s.replace(SUFFIX, (m) => (s.length - m.length >= 3 ? '' : m)).trim();
+      s = s.replace(/[\s\-–*.,]+$/, '');
+    } while (s !== prev && s.length > 2);
+    return s;
+  }
+  const brandOf = (s) => { const n = s.toLowerCase().trim(); const b = BRANDS.find(([re]) => re.test(n)); return b ? b[1] : null; };
+
+  /** "Raia drogasil sasao paulobra" → "Raia Drogasil"; "Pg *Manaus Em Dobro Lt Florianop" → "Manaus Em Dobro". */
+  function cleanMerchant(raw) {
+    let s = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return raw;
+    const star = s.indexOf('*');
+    if (star > 0) {
+      const pre = s.slice(0, star).trim(), post = stripLocation(s.slice(star + 1).trim());
+      const preKey = pre.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (GATEWAYS.has(preKey)) s = post || pre;
+      else {
+        const b = brandOf(pre);
+        const pb = post ? brandOf(post) : null;
+        if (b && (!post || pb === b || /\d/.test(post) || post.length < 4)) s = b;
+        else if (b) return b + ' — ' + tidy(post);
+        else s = pre;
+      }
+    }
+    s = stripLocation(s);
+    const b = brandOf(s);
+    if (b && (s.split(' ').length <= 3 || b === 'Raia Drogasil')) return b;
+    return tidy(s);
+  }
+
   /** Remove itens repetidos (prints que se sobrepõem). */
   function dedupe(items) {
     const seen = new Set();
     return items.filter((it) => {
-      const k = [it.date, it.desc.toLowerCase().replace(/\W/g, ''), it.amount.toFixed(2), it.n, it.of].join('|');
+      const k = [it.date, (it.raw || it.desc).toLowerCase().replace(/\W/g, ''), it.amount.toFixed(2), it.n, it.of].join('|');
       if (seen.has(k)) return false; seen.add(k); return true;
     });
   }
@@ -267,7 +321,7 @@
       }
       const n = p ? p.n : 1, of = p ? p.of : 1;
       const date = map.date >= 0 ? cellToDate(row[map.date], opts.invoiceMonth) : '';
-      items.push({ date, desc: tidy(desc), amount: Math.round(amount * 100) / 100, n, of, catLabel: map.category >= 0 ? String(row[map.category] ?? '').trim() : '' });
+      items.push({ date, desc: tidy(desc), raw: desc, amount: Math.round(amount * 100) / 100, n, of, catLabel: map.category >= 0 ? String(row[map.category] ?? '').trim() : '' });
     }
     return items;
   }
@@ -290,6 +344,6 @@
     return rows.filter((r) => r.some((c) => String(c).trim() !== ''));
   }
 
-  const api = { cellToDate, cellToNumber, cellToParcela, detectSheetMapping, sheetColumns, negativesAreExpenses, sheetToItems, parseCSV, parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
+  const api = { cleanMerchant, cellToDate, cellToNumber, cellToParcela, detectSheetMapping, sheetColumns, negativesAreExpenses, sheetToItems, parseCSV, parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
   if (typeof module !== 'undefined') module.exports = api; else root.Parsers = api;
 })(typeof window !== 'undefined' ? window : globalThis);
