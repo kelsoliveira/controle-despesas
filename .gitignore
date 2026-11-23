@@ -1,0 +1,4 @@
+# Dados pessoais — nunca versionar
+controle-despesas*.json
+backups/
+*.pdf
