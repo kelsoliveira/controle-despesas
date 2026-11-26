@@ -15,6 +15,7 @@ window.SEED = {
     startMonth: ''
   },
   cards: [],
+  extraIncome: [],   // rendas extras: { id, name, kind: 'ferias'|'13'|'bonus'|'outro', amount, month: 'AAAA-MM', yearly }
   invoiceOverrides: {},
   invoicePaid: {},
   fixedPaid: {},

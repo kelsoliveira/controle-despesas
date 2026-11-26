@@ -196,7 +196,7 @@
         <div class="panel kpi">
           <div class="kpi-label">${icon('trend')}Renda do mês</div>
           <div class="kpi-value">${fmt.money(sm.income)}</div>
-          <div class="kpi-foot">Reserva de ${st.savingsGoal || 0}%: ${fmt.money(sm.savings)}</div>
+          <div class="kpi-foot">${sm.extraTotal ? `Inclui ${sm.extras.map((e) => esc(e.name)).join(' + ')}: <b class="pos">+${fmt.money(sm.extraTotal)}</b> · ` : ''}Reserva de ${st.savingsGoal || 0}%: ${fmt.money(sm.savings)}</div>
         </div>
         <div class="panel kpi">
           <div class="kpi-label">${icon('calendar')}Comprometido</div>
@@ -252,7 +252,7 @@
   function afterDashboard() {
     const m = ui.month, months = ym.range(m, 12);
     const { series } = projectionSeries(months);
-    Charts.stackedBars($('#chartDash'), { months, series, selected: m, reference: { name: 'Renda', value: S().settings.income }, label: 'Compromissos mensais', onClick: (mm) => { ui.month = mm; render(); } });
+    Charts.stackedBars($('#chartDash'), { months, series, selected: m, reference: { name: 'Renda', values: months.map((mm) => Core.monthSummary(mm).income) }, label: 'Compromissos mensais', onClick: (mm) => { ui.month = mm; render(); } });
     const d = $('#donut');
     if (d) {
       // reconstrói os mesmos dados da legenda
@@ -341,7 +341,7 @@
     const sim = ui.sim;
     const extra = sim ? { name: 'Simulação', color: Charts.slot(6), values: months.map((mm) => (mm >= sim.start && mm < ym.add(sim.start, sim.n) ? sim.total / sim.n : 0)) } : null;
     const { series } = projectionSeries(months, extra);
-    Charts.stackedBars($('#chartFut'), { months, series, selected: m, height: 300, reference: { name: 'Renda', value: S().settings.income }, onClick: (mm) => { ui.month = mm; location.hash = '#/'; } });
+    Charts.stackedBars($('#chartFut'), { months, series, selected: m, height: 300, reference: { name: 'Renda', values: months.map((mm) => Core.monthSummary(mm).income) }, onClick: (mm) => { ui.month = mm; location.hash = '#/'; } });
     $$('#horizon button').forEach((b) => b.addEventListener('click', () => { ui.horizon = +b.dataset.h; render(); }));
     $('#simForm').addEventListener('submit', (e) => {
       e.preventDefault(); const f = new FormData(e.target);
@@ -633,6 +633,7 @@
             <div class="field full"><button class="btn btn-primary" type="submit">Salvar</button></div>
           </form>
         </div>
+        ${extrasPanelHTML()}
         <div class="panel">
           <div class="panel-head"><h2>Cartões</h2><span class="spacer"></span><button class="btn btn-sm" data-act="card-new">${icon('plus')}Novo cartão</button></div>
           <div class="list">${S().cards.map((c) => `<div class="list-item"><span class="dot" style="background:${Charts.tone(c.color)}"></span>
@@ -651,7 +652,75 @@
         </div>
       </div>`;
   }
+  // ---------------- Rendas extras (férias, 13º…) ----------------
+  const EXTRA_KINDS = { '13': '13º salário', ferias: 'Férias', bonus: 'Bônus / PLR', outro: 'Outra renda' };
+  function extrasPanelHTML() {
+    const list = (S().extraIncome || []).slice().sort((a, b) => (a.month || '').localeCompare(b.month || ''));
+    const base = +S().settings.income || 0;
+    return `<div class="panel">
+      <div class="panel-head"><h2>Rendas extras</h2><span class="sub">somadas à renda no mês em que caem</span><span class="spacer"></span>
+        <button class="btn btn-sm" data-act="extra-new">${icon('plus')}Nova renda extra</button></div>
+      <div class="toolbar" style="margin-bottom:8px">
+        <button class="btn btn-sm" type="button" id="add13">${icon('plus')}13º salário (2 parcelas)</button>
+        <button class="btn btn-sm" type="button" id="addFerias">${icon('plus')}Férias</button>
+      </div>
+      ${list.length ? `<div class="list">${list.map((e) => `<div class="list-item">
+        <div class="avatar">${icon(e.kind === 'ferias' ? 'sun' : 'piggy')}</div>
+        <div class="grow"><div class="cell-title">${esc(e.name)}</div><div class="cell-sub">${esc(EXTRA_KINDS[e.kind] || 'Renda extra')} · ${e.month ? fmt.monthLong(e.month) : '—'}${e.yearly ? ' · todo ano' : ''}</div></div>
+        <div class="amount pos">+${fmt.money(e.amount)}</div>
+        <button class="icon-btn" data-xedit="${e.id}" aria-label="Editar">${icon('edit')}</button><button class="icon-btn btn-danger" data-xdel="${e.id}" aria-label="Excluir">${icon('trash')}</button>
+      </div>`).join('')}</div>` : `<div class="empty">Nenhuma renda extra. Use os botões acima para incluir o 13º e as férias${base ? '' : ' (informe a renda mensal para sugerir os valores)'}.</div>`}
+    </div>`;
+  }
+  function extraForm(e, preset = {}) {
+    const isNew = !e;
+    e = e || { name: preset.name || '', kind: preset.kind || 'outro', amount: preset.amount ?? '', month: preset.month || ui.month, yearly: preset.yearly ?? true };
+    openModal(`
+      <h2>${isNew ? 'Nova renda extra' : 'Editar renda extra'}</h2>
+      <p class="desc">Valor líquido que entra na conta. Ele é somado à renda do mês escolhido e aumenta o “posso gastar” daquele mês.</p>
+      <div class="form-grid">
+        <div class="field full"><label>Descrição</label><input type="text" name="name" required value="${esc(e.name)}" placeholder="Ex.: 13º salário — 1ª parcela" /></div>
+        <div class="field"><label>Tipo</label><select name="kind">${Object.entries(EXTRA_KINDS).map(([k, v]) => `<option value="${k}" ${k === e.kind ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div class="field"><label>Valor líquido (R$)</label><input type="number" name="amount" step="0.01" min="0" required value="${e.amount}" /></div>
+        <div class="field"><label>Mês do recebimento</label><input type="month" name="month" required value="${e.month}" /></div>
+        <div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="yearly" ${e.yearly ? 'checked' : ''}/> Repetir todo ano</label></div>
+        ${preset.hint ? `<div class="field full"><span class="hint">${preset.hint}</span></div>` : ''}
+      </div>${actions()}`, (f) => {
+      const data = { name: f.get('name').trim(), kind: f.get('kind'), amount: +f.get('amount') || 0, month: f.get('month'), yearly: !!f.get('yearly') };
+      S().extraIncome = S().extraIncome || [];
+      if (isNew) S().extraIncome.push({ id: Core.uid(), ...data }); else Object.assign(e, data);
+      commit('Renda extra salva');
+    });
+  }
+  function add13() {
+    const base = +S().settings.income || 0, y = (ui.month || ym.today()).slice(0, 4);
+    const half = Math.round(base / 2 * 100) / 100;
+    S().extraIncome = S().extraIncome || [];
+    S().extraIncome.push(
+      { id: Core.uid(), name: '13º salário — 1ª parcela', kind: '13', amount: half, month: `${y}-11`, yearly: true },
+      { id: Core.uid(), name: '13º salário — 2ª parcela', kind: '13', amount: half, month: `${y}-12`, yearly: true }
+    );
+    commit('13º incluído — confira os valores líquidos');
+  }
+  function afterExtras() {
+    const base = +S().settings.income || 0;
+    const b13 = $('#add13'); if (b13) b13.addEventListener('click', () => {
+      if ((S().extraIncome || []).some((e) => e.kind === '13') && !confirm('Já existe 13º cadastrado. Incluir outro?')) return;
+      add13();
+    });
+    const bf = $('#addFerias'); if (bf) bf.addEventListener('click', () => extraForm(null, {
+      name: 'Férias — 1/3 constitucional', kind: 'ferias', amount: base ? Math.round(base / 3 * 100) / 100 : '', month: ym.add(ui.month, 1), yearly: true,
+      hint: 'Sugestão: 1/3 do salário (adicional de férias). Informe só o valor que entra <b>a mais</b> naquele mês — o salário normal já está na renda mensal. Se o salário das férias vier adiantado e o mês seguinte vier menor, ajuste para o valor líquido real.'
+    }));
+    $$('[data-xedit]').forEach((b) => b.addEventListener('click', () => extraForm(S().extraIncome.find((x) => x.id === b.dataset.xedit))));
+    $$('[data-xdel]').forEach((b) => b.addEventListener('click', () => {
+      const e = S().extraIncome.find((x) => x.id === b.dataset.xdel);
+      if (confirm(`Excluir “${e.name}”?`)) { S().extraIncome = S().extraIncome.filter((x) => x !== e); commit('Renda extra excluída'); }
+    }));
+  }
+
   function afterConfig() {
+    afterExtras();
     afterFolderPanel();
     $('#cfgForm').addEventListener('submit', (e) => {
       e.preventDefault(); const f = new FormData(e.target);
@@ -1316,7 +1385,7 @@
   }
   const ACT = {
     'card-new': () => cardForm(), 'card-edit': () => cardForm(card(ui.cardSel)), 'inv-override': () => overrideForm(),
-    'tx-new': () => txForm(), 'tx-new-card': () => txForm(null, { account: ui.cardSel }), 'bulk-del-card': () => bulkDeleteForm({ account: ui.cardSel, month: ui.cardMonth || ui.month }), 'fix-new': () => fixedForm()
+    'tx-new': () => txForm(), 'tx-new-card': () => txForm(null, { account: ui.cardSel }), 'bulk-del-card': () => bulkDeleteForm({ account: ui.cardSel, month: ui.cardMonth || ui.month }), 'fix-new': () => fixedForm(), 'extra-new': () => extraForm()
   };
 
   function applyTheme() {

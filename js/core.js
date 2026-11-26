@@ -97,10 +97,18 @@
   const accountItems = (m) => state.transactions.filter((t) => t.account === 'conta')
     .map((t) => installmentIn(t, m)).filter(Boolean);
 
+  /** Rendas extras recebidas no mês (férias, 13º, bônus…). Anuais repetem no mesmo mês dos anos seguintes. */
+  function extrasIn(m) {
+    return (state.extraIncome || []).filter((e) => e.month && (e.month === m || (e.yearly && e.month < m && e.month.slice(5) === m.slice(5))));
+  }
+
   /** Resumo financeiro de um mês (regime de caixa: o que vence/sai no mês). */
   function monthSummary(m) {
     const s = state.settings;
-    const income = +s.income || 0;
+    const baseIncome = +s.income || 0;
+    const extras = extrasIn(m);
+    const extraTotal = extras.reduce((a, e) => a + (+e.amount || 0), 0);
+    const income = baseIncome + extraTotal;
     const savings = income * (+s.savingsGoal || 0) / 100;
     const fixed = state.fixed.filter((f) => fixedActive(f, m));
     const fixedTotal = fixed.reduce((a, f) => a + (+f.amount || 0), 0);
@@ -116,7 +124,7 @@
     // Compras feitas no mês (competência), independentemente de quando vencem
     const purchases = state.transactions.filter((t) => t.date && t.date.slice(0, 7) === m && t.amount > 0)
       .reduce((a, t) => a + t.amount * t.installments, 0);
-    return { month: m, income, savings, fixed, fixedTotal, fixedPaid, invoices, cardsTotal, cardsPaid, account, accountTotal, committed, spent, available, purchases };
+    return { month: m, income, baseIncome, extras, extraTotal, savings, fixed, fixedTotal, fixedPaid, invoices, cardsTotal, cardsPaid, account, accountTotal, committed, spent, available, purchases };
   }
 
   /** Saldo devedor restante de uma transação a partir do mês m (inclusive). */
@@ -127,5 +135,5 @@
   }
 
   window.Core = { fmt, ym, load, save, onSave, reset, replace, uid, get state() { return state; }, set state(v) { state = v; },
-    accountName, installmentIn, invoiceItems, invoice, fixedActive, monthSummary, remainingFrom, KEY };
+    accountName, extrasIn, installmentIn, invoiceItems, invoice, fixedActive, monthSummary, remainingFrom, KEY };
 })();

@@ -35,7 +35,7 @@
 
   /**
    * Barras empilhadas por mês.
-   * opts: { months:[ym], series:[{name,color,values:[]}], reference:{name,value} , onClick(month) , selected }
+   * opts: { months:[ym], series:[{name,color,values:[]}], reference:{name, value | values:[]}, onClick(month), selected }
    */
   function stackedBars(container, opts) {
     container.innerHTML = '';
@@ -45,7 +45,10 @@
     const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
     const n = opts.months.length;
     const totals = opts.months.map((_, i) => opts.series.reduce((a, s) => a + Math.max(0, s.values[i] || 0), 0));
-    const max = niceMax(Math.max(...totals, opts.reference ? opts.reference.value : 0));
+    const ref = opts.reference || null;
+    const refAt = (i) => (ref ? (ref.values ? ref.values[i] || 0 : ref.value || 0) : 0);
+    const refMax = ref ? Math.max(0, ...opts.months.map((_, i) => refAt(i))) : 0;
+    const max = niceMax(Math.max(...totals, refMax));
     const y = (v) => pad.t + ih - (v / max) * ih;
     const band = iw / n, bw = Math.min(44, band * 0.62);
 
@@ -91,8 +94,8 @@
       hit.addEventListener('mousemove', (ev) => {
         const rows = opts.series.filter((s) => (s.values[i] || 0) !== 0).map((s) =>
           `<div class="viz-tip-row"><span class="dot" style="background:${tone(s.color)}"></span><span>${s.name}</span><b>${fmt.money(s.values[i])}</b></div>`).join('');
-        const ref = opts.reference && opts.reference.value ? `<div class="viz-tip-row muted"><span class="dash"></span><span>${opts.reference.name}</span><b>${fmt.money(opts.reference.value)}</b></div>` : '';
-        tip.innerHTML = `<div class="viz-tip-title">${fmt.monthLong(m)}</div>${rows}<div class="viz-tip-total"><span>Total</span><b>${fmt.money(totals[i])}</b></div>${ref}`;
+        const refRow = refAt(i) ? `<div class="viz-tip-row muted"><span class="dash"></span><span>${ref.name}</span><b>${fmt.money(refAt(i))}</b></div>` : '';
+        tip.innerHTML = `<div class="viz-tip-title">${fmt.monthLong(m)}</div>${rows}<div class="viz-tip-total"><span>Total</span><b>${fmt.money(totals[i])}</b></div>${refRow}`;
         tip.hidden = false;
         const rect = container.getBoundingClientRect();
         let lx = ev.clientX - rect.left + 14; const tw = tip.offsetWidth;
@@ -102,11 +105,17 @@
       if (opts.onClick) hit.addEventListener('click', () => opts.onClick(m));
     });
 
-    if (opts.reference && opts.reference.value > 0) {
-      const ry = y(opts.reference.value);
-      el('line', { x1: pad.l, x2: W - pad.r, y1: ry, y2: ry, class: 'viz-ref' }, svg);
-      const t = el('text', { x: W - pad.r, y: ry - 6, 'text-anchor': 'end', class: 'viz-ref-label' }, svg);
-      t.textContent = opts.reference.name + ' ' + Core.fmt.moneyShort(opts.reference.value);
+    if (refMax > 0) {
+      // linha em degraus: acompanha meses com renda extra (férias, 13º)
+      let d = '';
+      opts.months.forEach((_, i) => {
+        const x0 = i === 0 ? pad.l : pad.l + band * i, x1 = i === n - 1 ? W - pad.r : pad.l + band * (i + 1), yy = y(refAt(i));
+        d += (i === 0 ? `M${x0},${yy}` : ` V${yy}`) + ` H${x1}`;
+      });
+      el('path', { d, fill: 'none', class: 'viz-ref' }, svg);
+      const last = refAt(n - 1), first = refAt(0);
+      const t = el('text', { x: W - pad.r, y: y(last) - 6, 'text-anchor': 'end', class: 'viz-ref-label' }, svg);
+      t.textContent = ref.name + ' ' + Core.fmt.moneyShort(last || first);
     }
   }
 
