@@ -151,13 +151,14 @@
 
     // vencimentos
     const dues = [
-      ...sm.invoices.filter((i) => i.total !== 0).map((i) => ({ kind: 'inv', id: i.cardId, name: 'Fatura ' + card(i.cardId).name, day: card(i.cardId).dueDay, amount: i.total, paid: i.paid, color: card(i.cardId).color, ic: 'card' })),
-      ...sm.fixed.filter((f) => +f.amount > 0).map((f) => ({ kind: 'fix', id: f.id, name: f.name, day: f.dueDay, amount: +f.amount, paid: !!S().fixedPaid[f.id + '|' + m], ic: FIXED_ICON(f), est: f.estimated }))
-    ].sort((a, b) => a.day - b.day);
+      ...sm.invoices.filter((i) => i.total !== 0).map((i) => ({ kind: 'inv', id: i.cardId, due: i.month, name: 'Fatura ' + card(i.cardId).name, day: card(i.cardId).dueDay, amount: i.total, paid: i.paid, color: card(i.cardId).color, ic: 'card' })),
+      ...sm.fixed.filter((f) => +f.amount > 0).map((f) => ({ kind: 'fix', id: f.id, due: f.dueMonth, name: f.name, day: f.dueDay, amount: +f.amount, paid: !!S().fixedPaid[f.id + '|' + f.dueMonth], ic: FIXED_ICON(f), est: f.estimated }))
+    ].sort((a, b) => (a.due + String(a.day).padStart(2, '0')).localeCompare(b.due + String(b.day).padStart(2, '0')));
+    const shifted = dues.some((d) => d.due !== m);
 
     // categorias (onde vai o dinheiro)
     const byCat = {};
-    S().cards.forEach((c) => Core.invoiceItems(c.id, m).forEach((it) => { byCat[it.tx.category] = (byCat[it.tx.category] || 0) + it.amount; }));
+    sm.invoices.forEach((inv) => inv.items.forEach((it) => { byCat[it.tx.category] = (byCat[it.tx.category] || 0) + it.amount; }));
     sm.account.forEach((it) => { byCat[it.tx.category] = (byCat[it.tx.category] || 0) + it.amount; });
     let cats = Object.entries(byCat).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ name: (CATS[k] || CATS.outros).name, value: v }));
     if (sm.fixedTotal) cats.unshift({ name: 'Despesas fixas', value: sm.fixedTotal });
@@ -218,15 +219,15 @@
           <p class="muted" style="margin:8px 0 0;font-size:12.5px">Clique numa barra para abrir o mês. Os valores futuros incluem apenas parcelas já contratadas e despesas fixas.</p>
         </div>
         <div class="panel">
-          <div class="panel-head"><h2>Vencimentos de ${fmt.month(m)}</h2></div>
+          <div class="panel-head"><h2>${shifted ? `Pagos com a renda de ${fmt.month(m)}` : `Vencimentos de ${fmt.month(m)}`}</h2></div>
           <div class="list">
             ${dues.length ? dues.map((d) => `
               <div class="list-item">
                 <div class="avatar" ${d.color ? `style="color:${Charts.tone(d.color)}"` : ''}>${icon(d.ic)}</div>
-                <div class="grow"><div class="cell-title">${esc(d.name)}</div><div class="cell-sub">Vence dia ${d.day}${d.est ? ' · <span class="badge warn">estimado</span>' : ''}</div></div>
+                <div class="grow"><div class="cell-title">${esc(d.name)}</div><div class="cell-sub">Vence ${d.due !== m ? String(d.day).padStart(2, '0') + '/' + d.due.slice(5) : 'dia ' + d.day}${d.est ? ' · <span class="badge warn">estimado</span>' : ''}</div></div>
                 <div style="text-align:right">
                   <div class="amount">${fmt.money(d.amount)}</div>
-                  <label class="check" style="font-size:12px"><input type="checkbox" data-pay="${d.kind}|${d.id}" ${d.paid ? 'checked' : ''}/>${d.paid ? 'Pago' : 'Pagar'}</label>
+                  <label class="check" style="font-size:12px"><input type="checkbox" data-pay="${d.kind}|${d.id}|${d.due}" ${d.paid ? 'checked' : ''}/>${d.paid ? 'Pago' : 'Pagar'}</label>
                 </div>
               </div>`).join('') : '<div class="empty">Nada a vencer.</div>'}
           </div>
@@ -260,9 +261,9 @@
       Charts.donut(d, items);
     }
     $$('[data-pay]').forEach((cb) => cb.addEventListener('change', () => {
-      const [kind, id] = cb.dataset.pay.split('|');
+      const [kind, id, due] = cb.dataset.pay.split('|');
       const map = kind === 'inv' ? S().invoicePaid : S().fixedPaid;
-      const key = id + '|' + m;
+      const key = id + '|' + (due || m);
       if (cb.checked) map[key] = true; else delete map[key];
       commit(cb.checked ? 'Marcado como pago' : 'Pagamento desmarcado');
     }));
@@ -312,7 +313,7 @@
       </div>
 
       <div class="panel mt">
-        <div class="panel-head"><h2>Tabela da visão futura</h2></div>
+        <div class="panel-head"><h2>Tabela da visão futura</h2>${S().settings.payWithPrevIncome ? `<span class="sub">cada mês mostra as contas pagas com a renda dele — faturas que vencem até o dia ${S().settings.prevIncomeDay || 10} do mês seguinte${S().settings.prevIncomeFixed ? ' e despesas fixas' : ''}</span>` : ''}</div>
         <div class="table-wrap"><table>
           <thead><tr><th>Mês</th><th class="r">Renda</th><th class="r">Reserva</th><th class="r">Fixas</th>${S().cards.map((c) => `<th class="r">${esc(c.name)}</th>`).join('')}<th class="r">Débito/Pix</th><th class="r">Comprometido</th><th class="r">Livre p/ gastar</th><th class="r">Acumulado</th></tr></thead>
           <tbody>${rows.map(({ s, acc }) => `<tr ${s.month === m ? 'style="font-weight:600"' : ''}>
@@ -629,6 +630,13 @@
           <form id="cfgForm" class="form-grid">
             <div class="field"><label for="cInc">Renda líquida mensal (R$)</label><input id="cInc" type="number" step="0.01" min="0" name="income" value="${st.income || ''}" placeholder="Ex.: 8000" /><span class="hint">Salário e outras entradas fixas, já com descontos.</span></div>
             <div class="field"><label for="cSav">Reserva para poupança (%)</label><input id="cSav" type="number" step="1" min="0" max="100" name="savingsGoal" value="${st.savingsGoal || 0}" /><span class="hint">Separada antes de calcular o “posso gastar”.</span></div>
+            <div class="field full"><label for="cPrev">Faturas do cartão entram no orçamento de</label>
+              <select id="cPrev" name="payWithPrevIncome">
+                <option value="1" ${st.payWithPrevIncome ? 'selected' : ''}>Mês anterior ao vencimento — pago com a renda do mês anterior (ex.: recebo em novembro, pago no início de dezembro)</option>
+                <option value="0" ${st.payWithPrevIncome ? '' : 'selected'}>Mês do vencimento</option>
+              </select></div>
+            <div class="field"><label for="cPrevDay">…quando vencem até o dia</label><input id="cPrevDay" type="number" min="1" max="31" name="prevIncomeDay" value="${st.prevIncomeDay || 10}" /><span class="hint">Contas que vencem depois desse dia ficam no próprio mês.</span></div>
+            <div class="field"><label class="check" style="margin-top:26px"><input type="checkbox" name="prevIncomeFixed" ${st.prevIncomeFixed ? 'checked' : ''}/> Aplicar também às despesas fixas</label></div>
             <div class="field"><label for="cTheme">Tema</label><select id="cTheme" name="theme"><option value="auto" ${st.theme === 'auto' ? 'selected' : ''}>Automático (sistema)</option><option value="light" ${st.theme === 'light' ? 'selected' : ''}>Claro</option><option value="dark" ${st.theme === 'dark' ? 'selected' : ''}>Escuro</option></select></div>
             <div class="field full"><button class="btn btn-primary" type="submit">Salvar</button></div>
           </form>
@@ -724,7 +732,8 @@
     afterFolderPanel();
     $('#cfgForm').addEventListener('submit', (e) => {
       e.preventDefault(); const f = new FormData(e.target);
-      Object.assign(S().settings, { income: +f.get('income') || 0, savingsGoal: +f.get('savingsGoal') || 0, theme: f.get('theme') });
+      Object.assign(S().settings, { income: +f.get('income') || 0, savingsGoal: +f.get('savingsGoal') || 0, theme: f.get('theme'),
+        payWithPrevIncome: f.get('payWithPrevIncome') === '1', prevIncomeDay: Math.min(31, Math.max(1, +f.get('prevIncomeDay') || 10)), prevIncomeFixed: !!f.get('prevIncomeFixed') });
       applyTheme(); commit('Configurações salvas');
     });
     $$('[data-cedit]').forEach((b) => b.addEventListener('click', () => cardForm(card(b.dataset.cedit))));

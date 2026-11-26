@@ -102,6 +102,13 @@
     return (state.extraIncome || []).filter((e) => e.month && (e.month === m || (e.yearly && e.month < m && e.month.slice(5) === m.slice(5))));
   }
 
+  /** Mês de vencimento que pertence ao orçamento do mês m: contas do início do mês seguinte são pagas com a renda de m. */
+  function dueMonthFor(m, dueDay, kind) {
+    const s = state.settings;
+    const on = s.payWithPrevIncome && (kind === 'card' || s.prevIncomeFixed);
+    return on && +dueDay <= (+s.prevIncomeDay || 10) ? ym.add(m, 1) : m;
+  }
+
   /** Resumo financeiro de um mês (regime de caixa: o que vence/sai no mês). */
   function monthSummary(m) {
     const s = state.settings;
@@ -110,10 +117,10 @@
     const extraTotal = extras.reduce((a, e) => a + (+e.amount || 0), 0);
     const income = baseIncome + extraTotal;
     const savings = income * (+s.savingsGoal || 0) / 100;
-    const fixed = state.fixed.filter((f) => fixedActive(f, m));
+    const fixed = state.fixed.map((f) => ({ ...f, dueMonth: dueMonthFor(m, f.dueDay, 'fixed') })).filter((f) => fixedActive(f, f.dueMonth));
     const fixedTotal = fixed.reduce((a, f) => a + (+f.amount || 0), 0);
-    const fixedPaid = fixed.filter((f) => state.fixedPaid[f.id + '|' + m]).reduce((a, f) => a + (+f.amount || 0), 0);
-    const invoices = state.cards.map((c) => invoice(c.id, m));
+    const fixedPaid = fixed.filter((f) => state.fixedPaid[f.id + '|' + f.dueMonth]).reduce((a, f) => a + (+f.amount || 0), 0);
+    const invoices = state.cards.map((c) => invoice(c.id, dueMonthFor(m, c.dueDay, 'card')));
     const cardsTotal = invoices.reduce((a, i) => a + i.total, 0);
     const cardsPaid = invoices.filter((i) => i.paid).reduce((a, i) => a + i.total, 0);
     const account = accountItems(m);
@@ -135,5 +142,5 @@
   }
 
   window.Core = { fmt, ym, load, save, onSave, reset, replace, uid, get state() { return state; }, set state(v) { state = v; },
-    accountName, extrasIn, installmentIn, invoiceItems, invoice, fixedActive, monthSummary, remainingFrom, KEY };
+    accountName, extrasIn, dueMonthFor, installmentIn, invoiceItems, invoice, fixedActive, monthSummary, remainingFrom, KEY };
 })();

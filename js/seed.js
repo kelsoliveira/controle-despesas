@@ -11,6 +11,9 @@ window.SEED = {
   settings: {
     income: 0,            // renda líquida mensal — preencha em Configurações
     savingsGoal: 10,      // % da renda reservada para poupança/investimento
+    payWithPrevIncome: true,  // faturas que vencem no início do mês são pagas com a renda do mês anterior
+    prevIncomeDay: 10,        // …se vencerem até este dia
+    prevIncomeFixed: false,   // aplicar a mesma regra às despesas fixas
     theme: 'auto',
     startMonth: ''
   },
