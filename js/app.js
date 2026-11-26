@@ -911,6 +911,7 @@
           <div class="field">${imp.header.total ? `<label>Total detectado na fatura</label><div class="kpi-value" style="font-size:20px;margin:0">${fmt.money(imp.header.total)}</div>
             <label class="check"><input type="checkbox" id="impUseTotal" ${imp.useTotal ? 'checked' : ''}/> Registrar como valor oficial da fatura</label>` : ''}</div>
         </div>
+        ${imp.header.open ? `<div class="alert info mt" style="margin-bottom:0">${icon('info')}<div><b>Extrato em aberto:</b> a fatura ainda não fechou. O total mostrado é parcial e não foi marcado como valor oficial; as parcelas que o banco ainda vai lançar continuam vindo das compras já cadastradas. Fatura sugerida pelo dia de fechamento do cartão — confira.</div></div>` : ''}
         ${imp.fromPrints ? `<div class="alert mt" style="margin-bottom:0">${icon('alert')}<div>
           <b>Prints não mostram qual mês está selecionado no app.</b> Ajuste o campo “Fatura” para o mês da aba destacada no app do banco (ex.: “Jan 27”) — ele define as parcelas e evita lançamentos duplicados. Itens cortados no topo/rodapé do print podem vir sem data ou sem o nº de parcelas: confira.
           <label class="check" style="margin-top:8px;display:flex"><input type="checkbox" id="impMonthOk" ${imp.monthOk ? 'checked' : ''}/> Confirmo que estes prints são da fatura de <b>&nbsp;${fmt.monthLong(imp.invoiceMonth)}</b></label></div></div>` : ''}
@@ -974,7 +975,8 @@
     imp.texts.forEach((t) => {
       const r = Parsers.parseText(t, imp.invoiceMonth);
       if (r.total && !header.total) header.total = r.total;
-      if (r.invoiceMonth && !header.invoiceMonth) header.invoiceMonth = r.invoiceMonth;
+      if (r.detectedMonth && !header.invoiceMonth) header.invoiceMonth = r.detectedMonth; // só o vencimento lido do arquivo
+      if (r.open) header.open = true;
       all.push(...r.items);
     });
     const textItems = Parsers.dedupe(all.splice(0)); // prints que se sobrepõem
@@ -1036,6 +1038,11 @@
       const sheetText = imp.sheets.map((sh) => sh.sheets[sh.sel].rows.slice(0, 12).map((r) => (r || []).join(' ')).join('\n')).join('\n');
       imp.account = Importer.detectCard([...imp.texts, sheetText, ...imp.files].join('\n'), S().cards) || '';
       reparse();
+      imp.useTotal = !imp.header.open; // total de extrato em aberto é parcial
+      if (imp.header.open && !imp.header.invoiceMonth && card(imp.account)) {
+        imp.invoiceMonth = firstInvoiceMonth(imp.account, new Date().toISOString().slice(0, 10)); // fatura que ainda vai fechar
+        reparse();
+      }
       // planilha com compras de vários meses: calcula a fatura pela data de cada compra
       if (imp.sheets.length && !imp.texts.length) {
         const ds = imp.items.map((i) => i.date).filter(Boolean).sort();

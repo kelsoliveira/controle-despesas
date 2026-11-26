@@ -34,7 +34,37 @@
     if (v) { out.dueDate = `${v[3]}-${v[2]}-${v[1]}`; out.invoiceMonth = `${v[3]}-${v[2]}`; }
     const t = text.match(/Total\s+(?:da\s+)?fatura[\s\S]{0,120}?R\s?\$\s*([\d.]+,\d{2})/i);
     if (t) out.total = toNum(t[1]);
+    if (/extrato\s+em\s+aberto|situa[cç][aã]o\s+do\s+extrato:?\s*em\s+aberto|fatura\s+(em\s+)?aberta|valores\s+sujeitos\s+a\s+altera/i.test(text)) out.open = true;
     return out;
+  }
+
+  /** Normaliza linhas de extrato: remove colunas de compra internacional zeradas e junta itens quebrados em 2–3 linhas. */
+  function normalizeStatement(text) {
+    const MONEY = '-?\\d{1,3}(?:\\.\\d{3})*,\\d{2}';
+    const intl = new RegExp('(^|\\s)\\d{3}\\s+' + MONEY + '\\s+' + MONEY + '\\s+R\\s?\\$\\s*' + MONEY + '(?=\\s+' + MONEY + '\\s*$)');
+    const L = text.split(/\n/).map((l) => l.replace(/\s+/g, ' ').trim().replace(intl, '$1').trim()).filter(Boolean);
+    const isDateOnly = (l) => /^\d{2}\/\d{2}$/.test(l);
+    const dateVal = (l) => l.match(new RegExp('^(\\d{2}\\/\\d{2})\\s+(' + MONEY + ')$'));
+    const isVal = (l) => new RegExp('^' + MONEY + '$').test(l);
+    const isParc = (l) => /^(?:[A-Z]{1,3}\s+)?\d{1,2}\/\d{1,2}$/i.test(l);
+    const isText = (l) => !/^\d{2}\/\d{2}\b/.test(l) && !isVal(l) && /[A-Za-z]{3}/.test(l) && !/total|fatura|extrato|hist[oó]rico|cota[cç][aã]o|origem/i.test(l);
+    const out = [];
+    for (let i = 0; i < L.length; i++) {
+      const dv = dateVal(L[i]);
+      if (dv && out.length && isText(out[out.length - 1])) { // nome em cima, data+valor no meio, parcela embaixo
+        const desc = out.pop();
+        const parc = L[i + 1] && isParc(L[i + 1]) ? L[++i] : '';
+        out.push(`${dv[1]} ${desc} ${parc} ${dv[2]}`.replace(/\s+/g, ' '));
+        continue;
+      }
+      if (isDateOnly(L[i])) { // data sozinha, depois nome/parcela, depois valor
+        let j = i + 1; const parts = [];
+        while (j < L.length && j < i + 5 && !isVal(L[j]) && (isText(L[j]) || isParc(L[j]))) parts.push(L[j++]);
+        if (parts.length && j < L.length && isVal(L[j])) { out.push(`${L[i]} ${parts.join(' ')} ${L[j]}`); i = j; continue; }
+      }
+      out.push(L[i]);
+    }
+    return out.join('\n');
   }
 
   /** Estratégia A: linhas no formato de fatura em PDF — "13/11 LOJA (01/04) 39,37". */
@@ -42,11 +72,11 @@
     const items = [];
     const re = /(?:^|\s)(\d{2})\/(\d{2})(?!\/\d)\s+(.+?)\s*(?:(?:PARC(?:ELA)?\.?\s*)?\(?\b(\d{1,2})\s?\/\s?(\d{1,2})\)?)?\s+(-\s?)?(?:R\s?\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2})(\s?-)?(?=\s|$)/i;
     let curRef = '';
-    for (const raw of text.split(/\n/)) {
+    for (const raw of normalizeStatement(text).split(/\n/)) {
       const line = raw.replace(/\s+/g, ' ').trim();
       // início da seção de um cartão: "5373.63**.****.4019" ou "final 4019"
-      const cr = line.match(/\d{4}[.\s]?\d{2}\*{2}[.\s]?\*{4}[.\s]?(\d{4})|\bfinal\s*(\d{4})\b/i);
-      if (cr) curRef = cr[1] || cr[2];
+      const cr = line.match(/\d{4}[.\s]?\d{2}\*{2}[.\s]?\*{4}[.\s]?(\d{4})|\bfinal\s*(\d{4})\b|X{4}[.\s]?X{4}[.\s]?X{4}[.\s]?(\d{4})/i);
+      if (cr) curRef = cr[1] || cr[2] || cr[3];
       const m = line.match(re);
       if (!m) continue;
       const [, dd, mm, descRaw, pn, pof, neg1, val, neg2] = m;
@@ -170,7 +200,7 @@
     const a = parseStatementLines(text, month);
     const b = parseAppScreens(text, month);
     const items = dedupe(a.length >= b.length ? a : b);
-    return { ...header, invoiceMonth: month, items, strategy: a.length >= b.length ? 'pdf' : 'app' };
+    return { ...header, detectedMonth: header.invoiceMonth || '', invoiceMonth: month, items, strategy: a.length >= b.length ? 'pdf' : 'app' };
   }
 
   /** Sugere a categoria pela descrição. */
@@ -365,6 +395,6 @@
     return rows.filter((r) => r.some((c) => String(c).trim() !== ''));
   }
 
-  const api = { detectSheetInvoice, cleanMerchant, cellToDate, cellToNumber, cellToParcela, detectSheetMapping, sheetColumns, negativesAreExpenses, sheetToItems, parseCSV, parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
+  const api = { normalizeStatement, detectSheetInvoice, cleanMerchant, cellToDate, cellToNumber, cellToParcela, detectSheetMapping, sheetColumns, negativesAreExpenses, sheetToItems, parseCSV, parseText, parseStatementLines, parseAppScreens, detectHeader, guessCategory, dedupe, inferYear, ymAdd, ymDiff };
   if (typeof module !== 'undefined') module.exports = api; else root.Parsers = api;
 })(typeof window !== 'undefined' ? window : globalThis);
