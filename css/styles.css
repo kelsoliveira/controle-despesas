@@ -340,9 +340,13 @@ code { font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--
 .grip-col { width: 64px; white-space: nowrap; padding-left: 4px !important; padding-right: 0 !important; }
 .grip { display: inline-flex; color: var(--text-3); cursor: grab; vertical-align: middle; padding: 4px; }
 .grip:active { cursor: grabbing; }
-.updown { display: inline-flex; flex-direction: column; vertical-align: middle; }
-.updown .icon-btn { width: 22px; height: 16px; border-radius: 4px; }
-.updown .icon-btn i { width: 14px; height: 14px; }
+.grip-col { width: 34px !important; }
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--text); }
+th.sortable .sort-ind { margin-left: 4px; font-size: 10px; opacity: .45; }
+th.sortable.is-sorted { color: var(--text); }
+th.sortable.is-sorted .sort-ind { opacity: 1; color: var(--primary); }
+.sort-note { font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
 tr.dragging td { opacity: .4; }
 tr.drop-before td { box-shadow: inset 0 2px 0 var(--primary); }
 tr.drop-after td { box-shadow: inset 0 -2px 0 var(--primary); }

@@ -68,7 +68,7 @@
   const catOptions = (sel) => Object.entries(CATS).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v.name}</option>`).join('');
 
   // ---------------- Estado de UI ----------------
-  const ui = { month: null, cardSel: null, cardMonth: null, txFilter: { account: 'all', q: '', scope: 'month', holder: 'all' }, cardHolder: 'all', sel: new Set(), horizon: 12, showDone: false, sim: null };
+  const ui = { month: null, cardSel: null, cardMonth: null, txFilter: { account: 'all', q: '', scope: 'month', holder: 'all' }, cardHolder: 'all', sel: new Set(), listSort: { lanc: null, parc: null }, horizon: 12, showDone: false, sim: null };
 
   function initMonth() {
     const t = ym.today(), s = S().settings.startMonth;
@@ -441,7 +441,7 @@
     const cat = CATS[t.category] || CATS.outros;
     return `<tr ${movable ? `draggable="true" data-row="${t.id}" class="${ui.sel.has(t.id) ? 'is-sel' : ''}"` : ''}>
       ${movable ? `<td class="sel-col"><input type="checkbox" data-sel="${t.id}" ${ui.sel.has(t.id) ? 'checked' : ''} aria-label="Selecionar"/></td>
-      <td class="grip-col"><span class="grip" title="Arraste para reordenar">${icon('grip')}</span><span class="updown"><button class="icon-btn" type="button" data-up="${t.id}" aria-label="Subir">${icon('up')}</button><button class="icon-btn" type="button" data-down="${t.id}" aria-label="Descer">${icon('down')}</button></span></td>` : ''}
+      <td class="grip-col"><span class="grip" title="Arraste para reordenar">${icon('grip')}</span></td>` : ''}
       <td class="num">${fmt.date(t.date)}</td>
       <td><div class="cell-title">${esc(t.desc)} ${holderBadge(t)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
       <td><span class="badge">${esc(cat.name)}</span></td>
@@ -452,16 +452,58 @@
   }
 
   // ---------------- Reordenar e mover lançamentos ----------------
-  /** Grava a nova ordem dos lançamentos visíveis da fatura. */
-  function saveOrder(ids) {
-    ids.forEach((id, i) => { const t = S().transactions.find((x) => x.id === id); if (t) t.sort = i; });
+  /** Grava a nova ordem (campo próprio de cada tela: fatura, lançamentos, parcelamentos). */
+  function saveOrder(ids, field = 'sort') {
+    ids.forEach((id, i) => { const t = S().transactions.find((x) => x.id === id); if (t) t[field] = i; });
     commit();
   }
-  function bindReorder() {
-    const body = $('#txBody'); if (!body) return;
+  /** Ordem manual: itens sem posição (novos) primeiro, pelo critério padrão. */
+  function manualOrder(rows, field, getT, fallback) {
+    return rows.sort((a, b) => {
+      const sa = getT(a)[field], sb = getT(b)[field];
+      if (sa == null && sb == null) return fallback(a, b);
+      if (sa == null) return -1;
+      if (sb == null) return 1;
+      return sa - sb;
+    });
+  }
+  /** Ordenação por coluna (clique no título). */
+  function headerOrder(rows, view, sorters) {
+    const st = ui.listSort[view];
+    if (!st || !sorters[st.key]) return false;
+    const fn = sorters[st.key], dir = st.dir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => { const x = fn(a), y = fn(b); return (typeof x === 'string' ? x.localeCompare(y, 'pt-BR') : x - y) * dir; });
+    return true;
+  }
+  function sortTh(view, key, label, cls = '') {
+    const st = ui.listSort[view], on = st && st.key === key;
+    return `<th class="${cls} sortable ${on ? 'is-sorted' : ''}" data-sortv="${view}" data-sortk="${key}" title="Ordenar por ${label.toLowerCase()}">${label}<span class="sort-ind">${on ? (st.dir === 'asc' ? '▲' : '▼') : '↕'}</span></th>`;
+  }
+  function sortNote(view) {
+    const st = ui.listSort[view];
+    return st ? `<span class="sort-note">Ordenado pela coluna — arrastar desativado. <button class="btn btn-sm btn-ghost" type="button" data-sortmanual="${view}">Voltar à ordem manual</button></span>` : `<span class="sort-note muted">Arraste as linhas pela alça ⋮⋮ para reordenar · clique no título da coluna para ordenar</span>`;
+  }
+  function bindSortHeaders() {
+    $$('[data-sortk]').forEach((th) => th.addEventListener('click', () => {
+      const v = th.dataset.sortv, k = th.dataset.sortk, cur = ui.listSort[v];
+      ui.listSort[v] = cur && cur.key === k ? { key: k, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: ['desc', 'value', 'left', 'saldo', 'amount'].includes(k) ? 'desc' : 'asc' };
+      render();
+    }));
+    $$('[data-sortmanual]').forEach((b) => b.addEventListener('click', () => { ui.listSort[b.dataset.sortmanual] = null; render(); }));
+  }
+  /** Linha com caixa de seleção e alça de arrastar (Lançamentos/Parcelamentos). */
+  const rowStart = (t, draggable) => `<tr ${draggable ? 'draggable="true"' : ''} data-row="${t.id}" class="${ui.sel.has(t.id) ? 'is-sel' : ''}">
+      <td class="sel-col"><input type="checkbox" data-sel="${t.id}" ${ui.sel.has(t.id) ? 'checked' : ''} aria-label="Selecionar"/></td>
+      <td class="grip-col">${draggable ? `<span class="grip" title="Arraste para reordenar">${icon('grip')}</span>` : ''}</td>`;
+  const selHead = (ids) => `<th class="sel-col"><input type="checkbox" id="selAll" aria-label="Selecionar todos" ${ids.length && ids.every((id) => ui.sel.has(id)) ? 'checked' : ''}/></th><th class="grip-col"></th>`;
+  const selBar = () => (ui.sel.size ? `<caption class="sel-bar"><span><b>${ui.sel.size}</b> selecionado(s)</span><button class="btn btn-sm btn-primary" type="button" id="selMove">${icon('move')}Mover…</button><button class="btn btn-sm btn-ghost" type="button" id="selClear">Limpar seleção</button></caption>` : '');
+
+  function bindDrag(body, field) {
+    if (!body) return;
     const ids = () => $$('tr[data-row]', body).map((r) => r.dataset.row);
     let dragged = null;
     $$('tr[data-row]', body).forEach((row) => {
+      if (!row.draggable) return;
       row.addEventListener('dragstart', (e) => { dragged = row; row.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', row.dataset.row); });
       row.addEventListener('dragend', () => { row.classList.remove('dragging'); $$('.drop-before,.drop-after', body).forEach((r) => r.classList.remove('drop-before', 'drop-after')); });
       row.addEventListener('dragover', (e) => {
@@ -475,26 +517,32 @@
         const after = row.classList.contains('drop-after');
         row.classList.remove('drop-before', 'drop-after');
         if (after) row.after(dragged); else row.before(dragged);
-        saveOrder(ids());
+        saveOrder(ids(), field);
       });
     });
-    const step = (id, d) => { const list = ids(); const i = list.indexOf(id), j = i + d; if (i < 0 || j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; saveOrder(list); };
-    $$('[data-up]', body).forEach((b) => b.addEventListener('click', () => step(b.dataset.up, -1)));
-    $$('[data-down]', body).forEach((b) => b.addEventListener('click', () => step(b.dataset.down, 1)));
-    const reset = $('#sortReset'); if (reset) reset.addEventListener('click', () => { const c = card(ui.cardSel), cm = ui.cardMonth || ui.month; Core.invoiceItems(c.id, cm).forEach((it) => { delete it.tx.sort; }); commit('Ordem por data restaurada'); });
-    // seleção
+  }
+  /** Seleção múltipla + botões mover. ctx = contexto da fatura (cartão/mês) ou null. */
+  function bindSelection(body, ctx) {
+    if (!body) return;
     $$('[data-sel]', body).forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) ui.sel.add(cb.dataset.sel); else ui.sel.delete(cb.dataset.sel); render(); }));
-    const all = $('#selAll'); if (all) all.addEventListener('change', () => { (ui._visIds || []).forEach((id) => (all.checked ? ui.sel.add(id) : ui.sel.delete(id))); render(); });
-    const sm = $('#selMove'); if (sm) sm.addEventListener('click', () => moveForm([...ui.sel]));
+    const all = $('#selAll'); if (all) all.addEventListener('change', () => { $$('tr[data-row]', body).forEach((r) => (all.checked ? ui.sel.add(r.dataset.row) : ui.sel.delete(r.dataset.row))); render(); });
+    const sm = $('#selMove'); if (sm) sm.addEventListener('click', () => moveForm([...ui.sel], ctx));
     const sc = $('#selClear'); if (sc) sc.addEventListener('click', () => { ui.sel.clear(); render(); });
-    $$('[data-move-tx]').forEach((b) => b.addEventListener('click', () => moveForm([b.dataset.moveTx])));
+    $$('[data-move-tx]').forEach((b) => b.addEventListener('click', () => moveForm([b.dataset.moveTx], ctx)));
+  }
+  function bindReorder() {
+    const body = $('#txBody'); if (!body) return;
+    bindDrag(body, 'sort');
+    bindSelection(body, { card: ui.cardSel, month: ui.cardMonth || ui.month });
+    const reset = $('#sortReset'); if (reset) reset.addEventListener('click', () => { const c = card(ui.cardSel), cm = ui.cardMonth || ui.month; Core.invoiceItems(c.id, cm).forEach((it) => { delete it.tx.sort; }); commit('Ordem por data restaurada'); });
   }
 
   /** Mover um ou mais lançamentos para outra fatura e/ou outro cartão. */
-  function moveForm(ids) {
+  function moveForm(ids, ctx) {
     const txs = ids.map((id) => S().transactions.find((t) => t.id === id)).filter(Boolean);
     if (!txs.length) return;
-    const fromCard = ui.cardSel, fromMonth = ui.cardMonth || ui.month;
+    if (!ctx) return moveFormRelative(txs);
+    const fromCard = ctx.card, fromMonth = ctx.month;
     const multi = txs.length > 1, anyParc = txs.some((t) => t.installments > 1);
     const form = openModal(`
       <h2>Mover ${multi ? txs.length + ' lançamentos' : 'lançamento'}</h2>
@@ -535,6 +583,48 @@
     form.onchange = upd; form.oninput = upd; upd();
   }
 
+  /** Mover a partir das listas (Lançamentos/Parcelamentos): desloca a fatura N meses e/ou troca o cartão. */
+  function moveFormRelative(txs) {
+    const multi = txs.length > 1, anyParc = txs.some((t) => t.installments > 1);
+    const accs = [...new Set(txs.map((t) => t.account))];
+    const form = openModal(`
+      <h2>Mover ${multi ? txs.length + ' lançamentos' : 'lançamento'}</h2>
+      <p class="desc">${multi ? txs.slice(0, 5).map((t) => esc(t.desc)).join(', ') + (txs.length > 5 ? '…' : '') : `<b>${esc(txs[0].desc)}</b> · ${fmt.money(txs[0].amount)}${txs[0].installments > 1 ? ' · ' + txs[0].installments + 'x' : ''} · 1ª parcela na fatura de ${fmt.month(txs[0].firstMonth)}`}</p>
+      <div class="form-grid">
+        <div class="field full"><label>Fatura</label>
+          <div class="toolbar" style="margin:0"><button class="btn btn-sm" type="button" data-shift="-1">${icon('left')}Fatura anterior</button>
+            <input type="number" name="delta" value="0" step="1" style="max-width:90px" aria-label="Meses" /><span class="muted">mês(es)</span>
+            <button class="btn btn-sm" type="button" data-shift="1">Próxima fatura${icon('right')}</button></div>
+          <span class="hint">0 = mantém a fatura. Negativo = faturas anteriores.${anyParc ? ' Nos parcelados, todas as parcelas andam junto.' : ''}</span></div>
+        <div class="field full"><label>Cartão / conta</label><select name="account"><option value="">— manter ${accs.length > 1 ? 'os cartões atuais' : esc(Core.accountName(accs[0]))} —</option>${accountOptions('')}</select></div>
+      </div>
+      <div id="movePrev" class="cell-sub" style="margin-top:12px"></div>
+      ${actions('Mover')}`, (f) => {
+      const delta = parseInt(f.get('delta'), 10) || 0, acc = f.get('account');
+      if (!delta && !acc) return;
+      const c = acc ? card(acc) : null;
+      txs.forEach((t) => {
+        if (delta) t.firstMonth = ym.add(t.firstMonth, delta);
+        if (acc && acc !== t.account) {
+          t.account = acc;
+          if (!c) delete t.holder; else if (t.holder && !holdersOf(c).some((h) => h.id === t.holder)) t.holder = 'titular';
+          delete t.sort;
+        }
+      });
+      ui.sel.clear();
+      commit(`${txs.length} lançamento(s) movido(s)`);
+    });
+    const upd = () => {
+      const d = parseInt(form.delta.value, 10) || 0, acc = form.account.value;
+      const parts = [];
+      if (d) parts.push(`fatura ${d > 0 ? d + ' mês(es) depois' : -d + ' mês(es) antes'}${!multi ? ` (1ª parcela em ${fmt.month(ym.add(txs[0].firstMonth, d))})` : ''}`);
+      if (acc) parts.push(`para <b>${esc(Core.accountName(acc))}</b>`);
+      $('#movePrev', form).innerHTML = parts.length ? 'Mover: ' + parts.join(' · ') + '.' : 'Nada a alterar.';
+    };
+    $$('[data-shift]', form).forEach((b) => b.addEventListener('click', () => { form.delta.value = (parseInt(form.delta.value, 10) || 0) + +b.dataset.shift; upd(); }));
+    form.onchange = upd; form.oninput = upd; upd();
+  }
+
   function afterCartoes() {
     $$('[data-card]').forEach((e) => e.addEventListener('click', () => { ui.cardSel = e.dataset.card; ui.cardMonth = null; ui.cardHolder = 'all'; ui.sel.clear(); render(); }));
     $$('#chips .chip').forEach((e) => e.addEventListener('click', () => { ui.cardMonth = e.dataset.m; ui.sel.clear(); render(); }));
@@ -556,7 +646,11 @@
     let list = S().transactions.filter((t) => t.installments > 1).map((t) => ({ t, r: Core.remainingFrom(t, m), cur: Math.min(t.installments, Math.max(0, ym.diff(t.firstMonth, m) + 1)) }));
     if (!ui.showDone) list = list.filter((x) => x.r.left > 0);
     if (f.account !== 'all') list = list.filter((x) => x.t.account === f.account);
-    list.sort((a, b) => b.r.value - a.r.value);
+    const byHeader = headerOrder(list, 'parc', {
+      desc: (x) => x.t.desc, card: (x) => Core.accountName(x.t.account), prog: (x) => x.cur / x.t.installments,
+      amount: (x) => x.t.amount, left: (x) => x.r.left, saldo: (x) => x.r.value, last: (x) => x.r.lastMonth
+    });
+    if (!byHeader) manualOrder(list, 'sortParc', (x) => x.t, (a, b) => b.r.value - a.r.value);
     const totalLeft = list.reduce((a, x) => a + x.r.value, 0);
     const monthly = list.filter((x) => Core.installmentIn(x.t, m)).reduce((a, x) => a + x.t.amount, 0);
 
@@ -570,24 +664,29 @@
         <div class="toolbar">
           <select id="pAcc"><option value="all">Todas as contas</option>${accountOptions(f.account)}</select>
           <label class="check"><input type="checkbox" id="pDone" ${ui.showDone ? 'checked' : ''}/> Mostrar quitados</label>
+          ${sortNote('parc')}
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Compra</th><th>Cartão</th><th>Andamento</th><th class="r">Parcela</th><th class="r">Restam</th><th class="r">Saldo</th><th>Última</th><th></th></tr></thead>
-          <tbody>${list.length ? list.map(({ t, r, cur }) => `<tr>
+          ${selBar()}
+          <thead><tr>${selHead(list.map((x) => x.t.id))}${sortTh('parc', 'desc', 'Compra')}${sortTh('parc', 'card', 'Cartão')}${sortTh('parc', 'prog', 'Andamento')}${sortTh('parc', 'amount', 'Parcela', 'r')}${sortTh('parc', 'left', 'Restam', 'r')}${sortTh('parc', 'saldo', 'Saldo', 'r')}${sortTh('parc', 'last', 'Última')}<th></th></tr></thead>
+          <tbody id="parcBody">${list.length ? list.map(({ t, r, cur }) => `${rowStart(t, !byHeader)}
             <td><div class="cell-title">${esc(t.desc)} ${holderBadge(t)}</div><div class="cell-sub">${fmt.date(t.date)} · total ${fmt.money(t.amount * t.installments)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
             <td><span class="badge"><i class="dot" style="background:${Charts.tone((card(t.account) || {}).color || seriesColor.conta)}"></i>${esc(Core.accountName(t.account))}</span></td>
             <td style="min-width:140px"><div class="cell-sub">${cur} de ${t.installments}</div><div class="progress"><span style="width:${(cur / t.installments) * 100}%"></span></div></td>
             <td class="r">${fmt.money(t.amount)}</td><td class="r">${r.left}x</td><td class="r"><b>${fmt.money(r.value)}</b></td>
             <td>${r.left ? fmt.month(r.lastMonth) : '<span class="badge good">quitado</span>'}</td>
-            <td><div class="row-actions"><button class="icon-btn" data-edit-tx="${t.id}" aria-label="Editar">${icon('edit')}</button><button class="icon-btn btn-danger" data-del-tx="${t.id}" aria-label="Excluir">${icon('trash')}</button></div></td>
-          </tr>`).join('') : '<tr><td colspan="8" class="empty">Nenhum parcelamento.</td></tr>'}</tbody>
-          ${list.length ? `<tfoot><tr><td colspan="5">Total</td><td class="r">${fmt.money(totalLeft)}</td><td colspan="2"></td></tr></tfoot>` : ''}
+            <td><div class="row-actions"><button class="icon-btn" data-move-tx="${t.id}" aria-label="Mover" title="Mover para outra fatura ou cartão">${icon('move')}</button><button class="icon-btn" data-edit-tx="${t.id}" aria-label="Editar">${icon('edit')}</button><button class="icon-btn btn-danger" data-del-tx="${t.id}" aria-label="Excluir">${icon('trash')}</button></div></td>
+          </tr>`).join('') : '<tr><td colspan="10" class="empty">Nenhum parcelamento.</td></tr>'}</tbody>
+          ${list.length ? `<tfoot><tr><td colspan="7">Total</td><td class="r">${fmt.money(totalLeft)}</td><td colspan="2"></td></tr></tfoot>` : ''}
         </table></div>
       </div>`;
   }
   function afterParcelas() {
     $('#pAcc').addEventListener('change', (e) => { ui.txFilter.account = e.target.value; render(); });
     $('#pDone').addEventListener('change', (e) => { ui.showDone = e.target.checked; render(); });
+    bindSortHeaders();
+    bindDrag($('#parcBody'), 'sortParc');
+    bindSelection($('#parcBody'), null);
     bindTxActions();
   }
   const accountOptions = (sel) => S().cards.map((c) => `<option value="${c.id}" ${sel === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') + `<option value="conta" ${sel === 'conta' ? 'selected' : ''}>Débito / Pix / Dinheiro</option>`;
@@ -647,8 +746,13 @@
     let rows;
     if (f.scope === 'month') rows = list.map((t) => ({ t, it: Core.installmentIn(t, m) })).filter((x) => x.it);
     else rows = list.map((t) => ({ t, it: null }));
-    rows.sort((a, b) => (b.t.date || '').localeCompare(a.t.date || ''));
-    const sum = rows.reduce((a, x) => a + (x.it ? x.it.amount : x.t.amount * x.t.installments), 0);
+    const valOf = (x) => (x.it ? x.it.amount : x.t.amount * x.t.installments);
+    const byHeader = headerOrder(rows, 'lanc', {
+      date: (x) => x.t.date || '', desc: (x) => x.t.desc, acc: (x) => Core.accountName(x.t.account), cat: (x) => (CATS[x.t.category] || CATS.outros).name,
+      parc: (x) => x.t.installments, value: valOf
+    });
+    if (!byHeader) manualOrder(rows, 'sortLanc', (x) => x.t, (a, b) => (b.t.date || '').localeCompare(a.t.date || ''));
+    const sum = rows.reduce((a, x) => a + valOf(x), 0);
     const groups = duplicateGroups();
     return `
       ${groups.length ? `<div class="panel" style="margin-bottom:20px;border-color:color-mix(in srgb, var(--warn) 45%, var(--border))">
@@ -671,18 +775,20 @@
           <span class="spacer" style="flex:1"></span>
           <button class="btn btn-primary btn-sm" data-act="tx-new">${icon('plus')}Novo gasto</button>
         </div>
+        <div class="toolbar" style="margin-top:-6px">${sortNote('lanc')}</div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Data</th><th>Descrição</th><th>Conta</th><th>Categoria</th><th>Parcelas</th><th class="r">${f.scope === 'month' ? 'Valor no mês' : 'Valor total'}</th><th></th></tr></thead>
-          <tbody>${rows.length ? rows.map(({ t, it }) => { const cat = CATS[t.category] || CATS.outros; const v = it ? it.amount : t.amount * t.installments; return `<tr>
+          ${selBar()}
+          <thead><tr>${selHead(rows.map((x) => x.t.id))}${sortTh('lanc', 'date', 'Data')}${sortTh('lanc', 'desc', 'Descrição')}${sortTh('lanc', 'acc', 'Conta')}${sortTh('lanc', 'cat', 'Categoria')}${sortTh('lanc', 'parc', 'Parcelas')}${sortTh('lanc', 'value', f.scope === 'month' ? 'Valor no mês' : 'Valor total', 'r')}<th></th></tr></thead>
+          <tbody id="lancBody">${rows.length ? rows.map(({ t, it }) => { const cat = CATS[t.category] || CATS.outros; const v = it ? it.amount : t.amount * t.installments; return `${rowStart(t, !byHeader)}
             <td class="num">${fmt.date(t.date)}</td>
             <td><div class="cell-title">${esc(t.desc)} ${holderBadge(t)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
             <td><span class="badge"><i class="dot" style="background:${Charts.tone((card(t.account) || {}).color || seriesColor.conta)}"></i>${esc(Core.accountName(t.account))}</span></td>
             <td>${esc(cat.name)}</td>
             <td>${t.installments > 1 ? `<span class="badge primary">${it ? it.n + ' de ' + t.installments : t.installments + 'x de ' + fmt.money(t.amount)}</span>` : '<span class="muted">à vista</span>'}</td>
             <td class="r ${v < 0 ? 'pos' : ''}"><b>${fmt.money(v)}</b></td>
-            <td><div class="row-actions"><button class="icon-btn" data-edit-tx="${t.id}" aria-label="Editar">${icon('edit')}</button><button class="icon-btn btn-danger" data-del-tx="${t.id}" aria-label="Excluir">${icon('trash')}</button></div></td>
-          </tr>`; }).join('') : '<tr><td colspan="7" class="empty">Nenhum lançamento encontrado.</td></tr>'}</tbody>
-          ${rows.length ? `<tfoot><tr><td colspan="5">${rows.length} lançamentos</td><td class="r">${fmt.money(sum)}</td><td></td></tr></tfoot>` : ''}
+            <td><div class="row-actions"><button class="icon-btn" data-move-tx="${t.id}" aria-label="Mover" title="Mover para outra fatura ou cartão">${icon('move')}</button><button class="icon-btn" data-edit-tx="${t.id}" aria-label="Editar">${icon('edit')}</button><button class="icon-btn btn-danger" data-del-tx="${t.id}" aria-label="Excluir">${icon('trash')}</button></div></td>
+          </tr>`; }).join('') : '<tr><td colspan="9" class="empty">Nenhum lançamento encontrado.</td></tr>'}</tbody>
+          ${rows.length ? `<tfoot><tr><td colspan="7">${rows.length} lançamentos</td><td class="r">${fmt.money(sum)}</td><td></td></tr></tfoot>` : ''}
         </table></div>
       </div>`;
   }
@@ -692,6 +798,9 @@
     $('#tAcc').addEventListener('change', (e) => { ui.txFilter.account = e.target.value; render(); });
     const th = $('#tHold'); if (th) th.addEventListener('change', () => { ui.txFilter.holder = th.value; render(); });
     $$('#tScope button').forEach((b) => b.addEventListener('click', () => { ui.txFilter.scope = b.dataset.s; render(); }));
+    bindSortHeaders();
+    bindDrag($('#lancBody'), 'sortLanc');
+    bindSelection($('#lancBody'), null);
     $$('[data-dupdel]').forEach((b) => b.addEventListener('click', () => {
       const t = S().transactions.find((x) => x.id === b.dataset.dupdel);
       if (confirm(`Excluir “${t.desc}” (${t.installments}x de ${fmt.money(t.amount)})?`)) { S().transactions = S().transactions.filter((x) => x !== t); commit('Duplicado excluído'); }
@@ -1513,7 +1622,8 @@
     $('#bulkDel').addEventListener('click', () => bulkDeleteForm());
     $('#menuBtn').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
     $('#nav').addEventListener('click', () => $('#sidebar').classList.remove('open'));
-    window.addEventListener('hashchange', () => { render(); $('#view').focus({ preventScroll: true }); window.scrollTo(0, 0); });
+    window.addEventListener('hashchange', () => {
+      ui.sel.clear(); render(); $('#view').focus({ preventScroll: true }); window.scrollTo(0, 0); });
     let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
     render();
     await Store.init();
