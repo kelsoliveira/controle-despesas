@@ -79,7 +79,14 @@
       .filter((t) => t.account === cardId)
       .map((t) => installmentIn(t, m))
       .filter(Boolean)
-      .sort((a, b) => (b.tx.date || '').localeCompare(a.tx.date || ''));
+      .sort((a, b) => {
+        // ordem definida pelo usuário (arrastar); lançamentos novos, sem ordem, aparecem no topo por data
+        const sa = a.tx.sort, sb = b.tx.sort;
+        if (sa == null && sb == null) return (b.tx.date || '').localeCompare(a.tx.date || '');
+        if (sa == null) return -1;
+        if (sb == null) return 1;
+        return sa - sb;
+      });
   }
 
   function invoice(cardId, m) {

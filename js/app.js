@@ -22,6 +22,9 @@
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/>',
+    grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
+    move: '<path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>',
+    up: '<path d="M18 15l-6-6-6 6"/>', down: '<path d="M6 9l6 6 6-6"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/>',
     trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>',
     wallet: '<path d="M20 7H5a2 2 0 010-4h13v4"/><path d="M3 5v14a2 2 0 002 2h15V7"/><circle cx="16" cy="14" r="1.5"/>',
@@ -65,7 +68,7 @@
   const catOptions = (sel) => Object.entries(CATS).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v.name}</option>`).join('');
 
   // ---------------- Estado de UI ----------------
-  const ui = { month: null, cardSel: null, cardMonth: null, txFilter: { account: 'all', q: '', scope: 'month', holder: 'all' }, cardHolder: 'all', horizon: 12, showDone: false, sim: null };
+  const ui = { month: null, cardSel: null, cardMonth: null, txFilter: { account: 'all', q: '', scope: 'month', holder: 'all' }, cardHolder: 'all', sel: new Set(), horizon: 12, showDone: false, sim: null };
 
   function initMonth() {
     const t = ym.today(), s = S().settings.startMonth;
@@ -404,9 +407,11 @@
 
         ${holderSummaryHTML(c, inv)}
         <div class="table-wrap mt"><table>
-          <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Parcela</th><th class="r">Valor</th><th></th></tr></thead>
-          <tbody>${inv.items.length ? inv.items.filter((it) => ui.cardHolder === 'all' || (it.tx.holder || 'titular') === ui.cardHolder).map((it) => txRow(it.tx, it)).join('') : `<tr><td colspan="6" class="empty">${inv.override != null ? 'Fatura informada apenas pelo total — itens não detalhados.' : 'Sem lançamentos nesta fatura.'}</td></tr>`}</tbody>
-          ${inv.items.length ? `<tfoot><tr><td colspan="4">Soma dos lançamentos</td><td class="r">${fmt.money(inv.computed)}</td><td></td></tr></tfoot>` : ''}
+          ${(() => { const vis = inv.items.filter((it) => ui.cardHolder === 'all' || (it.tx.holder || 'titular') === ui.cardHolder); ui._visIds = vis.map((it) => it.tx.id); return ''; })()}
+          ${ui.sel.size ? `<caption class="sel-bar"><span><b>${ui.sel.size}</b> selecionado(s)</span><button class="btn btn-sm btn-primary" type="button" id="selMove">${icon('move')}Mover…</button><button class="btn btn-sm btn-ghost" type="button" id="selClear">Limpar seleção</button></caption>` : ''}
+          <thead><tr><th class="sel-col"><input type="checkbox" id="selAll" aria-label="Selecionar todos" ${ui._visIds.length && ui._visIds.every((id) => ui.sel.has(id)) ? 'checked' : ''}/></th><th class="grip-col" title="Arraste para reordenar"></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Parcela</th><th class="r">Valor</th><th class="r">${inv.items.some((it) => it.tx.sort != null) ? '<button class="btn btn-sm btn-ghost" type="button" id="sortReset" title="Voltar à ordem por data">Ordenar por data</button>' : ''}</th></tr></thead>
+          <tbody id="txBody">${inv.items.length ? inv.items.filter((it) => ui.cardHolder === 'all' || (it.tx.holder || 'titular') === ui.cardHolder).map((it) => txRow(it.tx, it, true)).join('') : `<tr><td colspan="8" class="empty">${inv.override != null ? 'Fatura informada apenas pelo total — itens não detalhados.' : 'Sem lançamentos nesta fatura.'}</td></tr>`}</tbody>
+          ${inv.items.length ? `<tfoot><tr><td colspan="6">Soma dos lançamentos</td><td class="r">${fmt.money(inv.computed)}</td><td></td></tr></tfoot>` : ''}
         </table></div>
       </div>`;
   }
@@ -432,25 +437,113 @@
       ${Math.abs(rest) >= 0.01 ? `<div class="cell-sub" style="margin-top:8px">O valor oficial da fatura tem ${fmt.money(rest)} não detalhados em lançamentos (sem portador identificado).</div>` : ''}
     </div>`;
   }
-  function txRow(t, it) {
+  function txRow(t, it, movable) {
     const cat = CATS[t.category] || CATS.outros;
-    return `<tr>
+    return `<tr ${movable ? `draggable="true" data-row="${t.id}" class="${ui.sel.has(t.id) ? 'is-sel' : ''}"` : ''}>
+      ${movable ? `<td class="sel-col"><input type="checkbox" data-sel="${t.id}" ${ui.sel.has(t.id) ? 'checked' : ''} aria-label="Selecionar"/></td>
+      <td class="grip-col"><span class="grip" title="Arraste para reordenar">${icon('grip')}</span><span class="updown"><button class="icon-btn" type="button" data-up="${t.id}" aria-label="Subir">${icon('up')}</button><button class="icon-btn" type="button" data-down="${t.id}" aria-label="Descer">${icon('down')}</button></span></td>` : ''}
       <td class="num">${fmt.date(t.date)}</td>
       <td><div class="cell-title">${esc(t.desc)} ${holderBadge(t)}</div>${t.note ? `<div class="note">${icon('info')}${esc(t.note)}</div>` : ''}</td>
       <td><span class="badge">${esc(cat.name)}</span></td>
       <td>${t.installments > 1 ? `<span class="badge primary">${it ? it.n : ''}${it ? ' de ' : ''}${t.installments}${it ? '' : 'x'}</span>` : '<span class="muted">à vista</span>'}</td>
       <td class="r ${t.amount < 0 ? 'pos' : ''}"><b>${fmt.money(t.amount)}</b></td>
-      <td><div class="row-actions"><button class="icon-btn" data-edit-tx="${t.id}" aria-label="Editar">${icon('edit')}</button><button class="icon-btn btn-danger" data-del-tx="${t.id}" aria-label="Excluir">${icon('trash')}</button></div></td>
+      <td><div class="row-actions">${movable ? `<button class="icon-btn" data-move-tx="${t.id}" aria-label="Mover para outra fatura ou cartão" title="Mover para outra fatura ou cartão">${icon('move')}</button>` : ''}<button class="icon-btn" data-edit-tx="${t.id}" aria-label="Editar">${icon('edit')}</button><button class="icon-btn btn-danger" data-del-tx="${t.id}" aria-label="Excluir">${icon('trash')}</button></div></td>
     </tr>`;
   }
+
+  // ---------------- Reordenar e mover lançamentos ----------------
+  /** Grava a nova ordem dos lançamentos visíveis da fatura. */
+  function saveOrder(ids) {
+    ids.forEach((id, i) => { const t = S().transactions.find((x) => x.id === id); if (t) t.sort = i; });
+    commit();
+  }
+  function bindReorder() {
+    const body = $('#txBody'); if (!body) return;
+    const ids = () => $$('tr[data-row]', body).map((r) => r.dataset.row);
+    let dragged = null;
+    $$('tr[data-row]', body).forEach((row) => {
+      row.addEventListener('dragstart', (e) => { dragged = row; row.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', row.dataset.row); });
+      row.addEventListener('dragend', () => { row.classList.remove('dragging'); $$('.drop-before,.drop-after', body).forEach((r) => r.classList.remove('drop-before', 'drop-after')); });
+      row.addEventListener('dragover', (e) => {
+        if (!dragged || dragged === row) return; e.preventDefault();
+        const after = e.offsetY > row.offsetHeight / 2 || e.clientY > row.getBoundingClientRect().top + row.offsetHeight / 2;
+        row.classList.toggle('drop-after', after); row.classList.toggle('drop-before', !after);
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
+      row.addEventListener('drop', (e) => {
+        e.preventDefault(); if (!dragged || dragged === row) return;
+        const after = row.classList.contains('drop-after');
+        row.classList.remove('drop-before', 'drop-after');
+        if (after) row.after(dragged); else row.before(dragged);
+        saveOrder(ids());
+      });
+    });
+    const step = (id, d) => { const list = ids(); const i = list.indexOf(id), j = i + d; if (i < 0 || j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; saveOrder(list); };
+    $$('[data-up]', body).forEach((b) => b.addEventListener('click', () => step(b.dataset.up, -1)));
+    $$('[data-down]', body).forEach((b) => b.addEventListener('click', () => step(b.dataset.down, 1)));
+    const reset = $('#sortReset'); if (reset) reset.addEventListener('click', () => { const c = card(ui.cardSel), cm = ui.cardMonth || ui.month; Core.invoiceItems(c.id, cm).forEach((it) => { delete it.tx.sort; }); commit('Ordem por data restaurada'); });
+    // seleção
+    $$('[data-sel]', body).forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) ui.sel.add(cb.dataset.sel); else ui.sel.delete(cb.dataset.sel); render(); }));
+    const all = $('#selAll'); if (all) all.addEventListener('change', () => { (ui._visIds || []).forEach((id) => (all.checked ? ui.sel.add(id) : ui.sel.delete(id))); render(); });
+    const sm = $('#selMove'); if (sm) sm.addEventListener('click', () => moveForm([...ui.sel]));
+    const sc = $('#selClear'); if (sc) sc.addEventListener('click', () => { ui.sel.clear(); render(); });
+    $$('[data-move-tx]').forEach((b) => b.addEventListener('click', () => moveForm([b.dataset.moveTx])));
+  }
+
+  /** Mover um ou mais lançamentos para outra fatura e/ou outro cartão. */
+  function moveForm(ids) {
+    const txs = ids.map((id) => S().transactions.find((t) => t.id === id)).filter(Boolean);
+    if (!txs.length) return;
+    const fromCard = ui.cardSel, fromMonth = ui.cardMonth || ui.month;
+    const multi = txs.length > 1, anyParc = txs.some((t) => t.installments > 1);
+    const form = openModal(`
+      <h2>Mover ${multi ? txs.length + ' lançamentos' : 'lançamento'}</h2>
+      <p class="desc">${multi ? txs.slice(0, 5).map((t) => esc(t.desc)).join(', ') + (txs.length > 5 ? '…' : '') : `<b>${esc(txs[0].desc)}</b> · ${fmt.money(txs[0].amount)}${txs[0].installments > 1 ? ' · ' + txs[0].installments + 'x' : ''}`}</p>
+      <div class="form-grid">
+        <div class="field full"><label>Fatura</label>
+          <div class="toolbar" style="margin:0"><button class="btn btn-sm" type="button" data-shift="-1">${icon('left')}Fatura anterior</button>
+            <input type="month" name="month" value="${fromMonth}" required style="max-width:200px" />
+            <button class="btn btn-sm" type="button" data-shift="1">Próxima fatura${icon('right')}</button></div>
+          <span class="hint">Hoje ${multi ? 'estão' : 'está'} na fatura de ${fmt.monthLong(fromMonth)}.${anyParc ? ' Nos parcelados, todas as parcelas andam junto (a 1ª parcela muda de mês na mesma proporção).' : ''}</span></div>
+        <div class="field full"><label>Cartão / conta</label><select name="account">${accountOptions(fromCard)}</select>
+          <span class="hint">Ao trocar de cartão, o portador volta para o titular se o novo cartão não tiver o mesmo adicional.</span></div>
+      </div>
+      <div id="movePrev" class="cell-sub" style="margin-top:12px"></div>
+      ${actions('Mover')}`, (f) => {
+      const target = f.get('month'), acc = f.get('account');
+      const delta = ym.diff(fromMonth, target);
+      if (!delta && acc === fromCard) return;
+      const c = card(acc);
+      txs.forEach((t) => {
+        if (delta) t.firstMonth = ym.add(t.firstMonth, delta);
+        if (acc !== t.account) {
+          t.account = acc;
+          if (!c) delete t.holder; else if (t.holder && !holdersOf(c).some((h) => h.id === t.holder)) t.holder = 'titular';
+          delete t.sort;
+        }
+      });
+      ui.sel.clear();
+      if (acc !== fromCard && c) ui.cardSel = acc;
+      if (c) ui.cardMonth = target;
+      commit(`${txs.length} lançamento(s) movido(s) para ${c ? c.name : 'Débito / Pix'} · ${fmt.month(target)}`);
+    });
+    const upd = () => {
+      const t = form.month.value, acc = form.account.value;
+      $('#movePrev', form).innerHTML = t ? `Destino: <b>${esc(Core.accountName(acc))}</b>, ${card(acc) ? 'fatura de' : 'mês de'} <b>${fmt.monthLong(t)}</b>.` : '';
+    };
+    $$('[data-shift]', form).forEach((b) => b.addEventListener('click', () => { form.month.value = ym.add(form.month.value || fromMonth, +b.dataset.shift); upd(); }));
+    form.onchange = upd; form.oninput = upd; upd();
+  }
+
   function afterCartoes() {
-    $$('[data-card]').forEach((e) => e.addEventListener('click', () => { ui.cardSel = e.dataset.card; ui.cardMonth = null; ui.cardHolder = 'all'; render(); }));
-    $$('#chips .chip').forEach((e) => e.addEventListener('click', () => { ui.cardMonth = e.dataset.m; render(); }));
+    $$('[data-card]').forEach((e) => e.addEventListener('click', () => { ui.cardSel = e.dataset.card; ui.cardMonth = null; ui.cardHolder = 'all'; ui.sel.clear(); render(); }));
+    $$('#chips .chip').forEach((e) => e.addEventListener('click', () => { ui.cardMonth = e.dataset.m; ui.sel.clear(); render(); }));
     $$('[data-holder]').forEach((e) => e.addEventListener('click', () => { ui.cardHolder = e.dataset.holder; render(); }));
     const c = card(ui.cardSel); if (!c) return;
     const cm = ui.cardMonth || ui.month, key = c.id + '|' + cm;
     const p = $('#invPaid'); if (p) p.addEventListener('change', () => { if (p.checked) S().invoicePaid[key] = true; else delete S().invoicePaid[key]; commit('Fatura atualizada'); });
     const chip = $('#chips .chip.active'); if (chip) chip.scrollIntoView({ inline: 'center', block: 'nearest' });
+    bindReorder();
     bindTxActions();
   }
 
